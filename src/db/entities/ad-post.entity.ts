@@ -9,7 +9,7 @@ import {
 import type { CampaignEntity } from './campaign.entity.js';
 import type { PlatformAccountEntity } from './platform-account.entity.js';
 
-export type AdPostStatus = 'pending' | 'posted' | 'failed';
+export type AdPostStatus = 'pending' | 'in_progress' | 'posted' | 'failed';
 
 @Entity({ name: 'ad_posts' })
 export class AdPostEntity {

@@ -11,11 +11,19 @@ export function mainMenuKeyboard(): InlineKeyboard {
     .text('📤 Post', 'menu:post');
 }
 
-export function accountsKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('🤖 Register new (auto)', 'account:register')
-    .row()
-    .text('🏠 Main menu', 'menu:main');
+export function accountsKeyboard(
+  accounts?: Array<{ id: string; handle: string }>
+): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  if (accounts?.length) {
+    for (const a of accounts) {
+      kb.text(`@${a.handle}`, `account:details:${a.id}`).row();
+    }
+  }
+  kb.text('🤖 Register new (auto)', 'account:register').row();
+  kb.text('🔑 Add account (auth_token)', 'account:add_manual').row();
+  kb.text('🏠 Main menu', 'menu:main');
+  return kb;
 }
 
 export function accountDetailsKeyboard(accountId: string): InlineKeyboard {

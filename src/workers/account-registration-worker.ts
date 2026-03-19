@@ -2,8 +2,6 @@ import { encryptText } from '../shared/crypto.js';
 import { AppServices } from '../services/index.js';
 import { logger } from '../shared/logger.js';
 
-const CREDENTIALS_DELIMITER = '\x00';
-
 export class AccountRegistrationWorker {
   private intervalId: ReturnType<typeof setInterval> | null = null;
 
@@ -97,7 +95,14 @@ export class AccountRegistrationWorker {
     });
 
     if (result.success && result.handle) {
-      // 5. Create account record in DB with Camoufox credentials
+      if (!result.authToken) {
+        await this.services.registrationService.updateStatus(taskId, 'failed', {
+          errorMessage: 'Registration succeeded but auth_token was not captured'
+        });
+        return;
+      }
+
+      // 5. Create account record in DB with auth_token
       const account = await this.services.accountService.create({
         platform: 'x',
         handle: result.handle,
@@ -106,10 +111,9 @@ export class AccountRegistrationWorker {
         useCamoufox: 1
       });
 
-      const credentialsStr = `${mailAccount.address}${CREDENTIALS_DELIMITER}${mailAccount.password}`;
       await this.services.accountService.setCamoufoxCredentials(
         account.id,
-        encryptText(credentialsStr)
+        encryptText(result.authToken)
       );
 
       // 6. Assign persona and category via LLM

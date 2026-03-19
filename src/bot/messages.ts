@@ -1,3 +1,8 @@
+/** Escape Markdown v1 special characters */
+export function escMd(s: string): string {
+  return s.replace(/([_*`\[])/g, '\\$1');
+}
+
 export function buildMainMenuMessage(): string {
   return `*Welcome to Qwebek*
 
@@ -14,9 +19,9 @@ export function buildAccountsListMessage(
   }
   const lines = accounts.map(
     (a) =>
-      `• @${a.handle} (${a.platform})`
-      + (a.personaName ? ` | ${a.personaName}` : '')
-      + (a.categoryName ? ` | ${a.categoryName}` : '')
+      `• @${escMd(a.handle)} (${a.platform})`
+      + (a.personaName ? ` | ${escMd(a.personaName)}` : '')
+      + (a.categoryName ? ` | ${escMd(a.categoryName)}` : '')
       + ` | ${a.status}`
   );
   return `*Accounts* (${accounts.length})\n\n${lines.join('\n')}`;
@@ -28,7 +33,7 @@ export function buildPersonasListMessage(
   if (personas.length === 0) {
     return 'No personas yet. Create a persona first.';
   }
-  const lines = personas.map((p) => `• ${p.name} (\`${p.slug}\`)`);
+  const lines = personas.map((p) => `• ${escMd(p.name)} (\`${escMd(p.slug)}\`)`);
   return `*Personas* (${personas.length})\n\n${lines.join('\n')}`;
 }
 
@@ -38,7 +43,7 @@ export function buildCategoriesListMessage(
   if (categories.length === 0) {
     return 'No categories yet. Create a category first.';
   }
-  const lines = categories.map((c) => `• ${c.name} (\`${c.slug}\`)`);
+  const lines = categories.map((c) => `• ${escMd(c.name)} (\`${escMd(c.slug)}\`)`);
   return `*Categories* (${categories.length})\n\n${lines.join('\n')}`;
 }
 
@@ -48,7 +53,7 @@ export function buildCampaignsListMessage(
   if (campaigns.length === 0) {
     return 'No campaigns yet. Create a campaign first.';
   }
-  const lines = campaigns.map((c) => `• ${c.name} | \`${c.id}\` | ${c.status}`);
+  const lines = campaigns.map((c) => `• ${escMd(c.name)} | \`${c.id}\` | ${c.status}`);
   return `*Campaigns* (${campaigns.length})\n\n${lines.join('\n')}`;
 }
 
@@ -62,12 +67,12 @@ export function buildCampaignDetailsMessage(
   }
 ): string {
   const lines = [
-    `*Campaign: ${campaign.name}*`,
+    `*Campaign: ${escMd(campaign.name)}*`,
     '',
     `Status: ${campaign.status}`,
     `Materials: ${campaign.materialsCount}`,
-    campaign.targetCategoryNames ? `Target categories: ${campaign.targetCategoryNames}` : 'Target categories: all',
-    campaign.description ? `\n${campaign.description}` : ''
+    campaign.targetCategoryNames ? `Target categories: ${escMd(campaign.targetCategoryNames)}` : 'Target categories: all',
+    campaign.description ? `\n${escMd(campaign.description)}` : ''
   ];
   return lines.filter(Boolean).join('\n');
 }
@@ -86,7 +91,7 @@ ${authUrl}
 export function buildPostingStartedMessage(campaignName: string, count: number): string {
   return `*Posting started*
 
-Campaign: ${campaignName}
+Campaign: ${escMd(campaignName)}
 Posts queued: ${count}
 
 Check back later for status.`;

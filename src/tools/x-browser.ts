@@ -18,17 +18,28 @@ export class XBrowserTool {
       proxy: proxyConfig ?? undefined,
       geoip: true
     });
+    logger.info({ headless: config.CAMOUFOX_HEADLESS, proxy: proxyUrl ?? null }, 'XBrowserTool launching Camoufox Firefox');
     this.browser = await firefox.launch(opts);
     this.context = await this.browser.newContext({
       userAgent: USER_AGENT,
       viewport: VIEWPORT
     });
-    logger.debug('XBrowserTool launched');
+    logger.info('XBrowserTool launched — context ready');
   }
 
   async newPage(): Promise<Page> {
     if (!this.context) throw new Error('Browser not launched');
     return this.context.newPage();
+  }
+
+  async addCookies(cookies: Parameters<BrowserContext['addCookies']>[0]): Promise<void> {
+    if (!this.context) throw new Error('Browser not launched');
+    await this.context.addCookies(cookies);
+  }
+
+  async getCookies(urls?: string | string[]): Promise<ReturnType<BrowserContext['cookies']> extends Promise<infer R> ? R : never> {
+    if (!this.context) throw new Error('Browser not launched');
+    return urls ? this.context.cookies(urls) : this.context.cookies();
   }
 
   async close(): Promise<void> {
@@ -40,6 +51,6 @@ export class XBrowserTool {
       await this.browser.close();
       this.browser = null;
     }
-    logger.debug('XBrowserTool closed');
+    logger.info('XBrowserTool closed');
   }
 }

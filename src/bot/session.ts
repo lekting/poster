@@ -1,5 +1,5 @@
 export type AwaitingInput =
-  | 'account_handle'
+  | 'account_credentials'
   | 'reg_count'
   | 'persona_name'
   | 'persona_slug'

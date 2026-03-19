@@ -97,6 +97,7 @@ export class AccountService {
     if (!entity) return null;
     entity.encryptedCamoufoxCredentials = encryptedCredentials;
     entity.useCamoufox = 1;
+    entity.status = 'active';
     return this.repo.save(entity);
   }
 
@@ -123,6 +124,13 @@ export class AccountService {
       .andWhere('(a.lastOrganicPostAt IS NULL OR a.lastOrganicPostAt < :cutoff)', { cutoff })
       .orderBy('a.lastOrganicPostAt', 'ASC', 'NULLS FIRST')
       .getMany();
+  }
+
+  async setPremium(accountId: string, isPremium: boolean): Promise<PlatformAccountEntity | null> {
+    const entity = await this.repo.findOne({ where: { id: accountId } });
+    if (!entity) return null;
+    entity.isPremium = isPremium ? 1 : 0;
+    return this.repo.save(entity);
   }
 
   async setLastOrganicPostAt(accountId: string, at: Date): Promise<PlatformAccountEntity | null> {

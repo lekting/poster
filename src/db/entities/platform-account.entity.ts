@@ -50,6 +50,9 @@ export class PlatformAccountEntity {
   @Column({ type: 'text', nullable: true })
   encryptedCamoufoxCredentials!: string | null;
 
+  @Column({ type: 'integer', default: 0 })
+  isPremium!: number;
+
   @Column({ type: 'datetime', nullable: true })
   lastOrganicPostAt!: Date | null;
 

@@ -1,6 +1,7 @@
 import { run, RunnerHandle } from '@grammyjs/runner';
 import { Bot, InlineKeyboard, session } from 'grammy';
 import { config } from '../config/index.js';
+import { encryptText } from '../shared/crypto.js';
 import { AppServices } from '../services/index.js';
 import {
   buildAccountsListMessage,
@@ -9,7 +10,8 @@ import {
   buildCategoriesListMessage,
   buildMainMenuMessage,
   buildPersonasListMessage,
-  buildPostingStartedMessage
+  buildPostingStartedMessage,
+  escMd
 } from './messages.js';
 import {
   accountDetailsKeyboard,
@@ -68,6 +70,47 @@ export class TelegramBotApp {
     this.bot.on('message:text', async (ctx) => {
       if (!ctx.authUserId) return;
       const text = ctx.message.text?.trim() ?? '';
+
+      if (ctx.session.awaitingInput === 'account_credentials') {
+        // Format: login : pass : email : pass : phone : token : cookies
+        // Support multiple accounts — one per line
+        const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+        let added = 0;
+        const errors: string[] = [];
+
+        for (const line of lines) {
+          const parts = line.split(':').map((p) => p.trim());
+          if (parts.length < 7) {
+            errors.push(`Invalid format (expected 7 fields): ${line.slice(0, 40)}...`);
+            continue;
+          }
+          const [login, , , , , token] = parts;
+          if (!login || !token) {
+            errors.push(`Missing login or token: ${line.slice(0, 40)}...`);
+            continue;
+          }
+          const account = await this.services.accountService.create({
+            platform: 'x',
+            handle: login,
+            username: login,
+            encryptedTokens: null,
+            useCamoufox: 1
+          });
+          await this.services.accountService.setCamoufoxCredentials(
+            account.id,
+            encryptText(token)
+          );
+          added++;
+        }
+
+        ctx.session.awaitingInput = null;
+        const parts: string[] = [];
+        if (added > 0) parts.push(`Added *${added}* account(s).`);
+        if (errors.length > 0) parts.push(`Errors:\n${errors.join('\n')}`);
+        await ctx.reply(parts.join('\n\n') || 'No accounts added.', { parse_mode: PARSE_MODE });
+        if (added > 0) await this.renderAccounts(ctx);
+        return;
+      }
 
       if (ctx.session.awaitingInput === 'reg_count') {
         const num = parseInt(text.trim(), 10);
@@ -218,6 +261,13 @@ export class TelegramBotApp {
           '🤖 *Auto-Register X Accounts*\n\nHow many accounts to register? (1–20)\n\nThe system will automatically:\n• Create temp emails via mail\\.tm\n• Generate passwords and usernames\n• Register via browser automation\n• Auto-confirm email verification\n• Assign persona via AI',
           accountsKeyboard()
         );
+      } else if (data === 'account:add_manual') {
+        ctx.session.awaitingInput = 'account_credentials';
+        await this.safeEdit(
+          ctx,
+          '🔑 *Add account manually*\n\nSend credentials in format:\n`login : pass : email : pass : phone : token : cookies`\n\nYou can send multiple accounts, one per line.',
+          accountsKeyboard()
+        );
       } else if (data.startsWith('account:persona:')) {
         const accountId = data.replace('account:persona:', '');
         const personas = await this.services.personaService.getAll();
@@ -260,7 +310,7 @@ export class TelegramBotApp {
         const accountId = data.replace('account:details:', '');
         const account = await this.services.accountService.getById(accountId);
         if (account) {
-          const msg = `*Account* @${account.handle}\nPlatform: ${account.platform}\nStatus: ${account.status}`;
+          const msg = `*Account* @${escMd(account.handle)}\nPlatform: ${account.platform}\nStatus: ${account.status}`;
           await this.safeEdit(ctx, msg, accountDetailsKeyboard(accountId));
         }
       } else if (data === 'persona:add') {
@@ -410,10 +460,11 @@ export class TelegramBotApp {
       status: a.status
     }));
     const text = buildAccountsListMessage(list);
+    const kb = accountsKeyboard(accounts.map((a) => ({ id: a.id, handle: a.handle })));
     if (edit && ctx.callbackQuery) {
-      await this.safeEdit(ctx, text, accountsKeyboard());
+      await this.safeEdit(ctx, text, kb);
     } else {
-      await ctx.reply(text, { parse_mode: PARSE_MODE, reply_markup: accountsKeyboard() });
+      await ctx.reply(text, { parse_mode: PARSE_MODE, reply_markup: kb });
     }
   }
 
