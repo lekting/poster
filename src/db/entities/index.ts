@@ -1,0 +1,9 @@
+export { AdMaterialEntity } from './ad-material.entity.js';
+export { AdPostEntity } from './ad-post.entity.js';
+export { CampaignEntity } from './campaign.entity.js';
+export { CategoryEntity } from './category.entity.js';
+export { OAuthPendingEntity } from './oauth-pending.entity.js';
+export { PersonaEntity } from './persona.entity.js';
+export { PlatformAccountEntity } from './platform-account.entity.js';
+export { RegistrationQueueEntity } from './registration-queue.entity.js';
+export { TelegramUserEntity } from './telegram-user.entity.js';
