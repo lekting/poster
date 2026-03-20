@@ -53,6 +53,15 @@ export class PlatformAccountEntity {
   @Column({ type: 'integer', default: 0 })
   isPremium!: number;
 
+  @Column({ type: 'text', nullable: true })
+  encryptedCookies!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  encrypted2faSecret!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  encryptedPassword!: string | null;
+
   @Column({ type: 'datetime', nullable: true })
   lastOrganicPostAt!: Date | null;
 

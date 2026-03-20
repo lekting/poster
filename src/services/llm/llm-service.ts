@@ -18,6 +18,19 @@ export interface GeneratePostInput {
   isPremium?: boolean;
 }
 
+export interface GenerateThreadsPostInput {
+  adContent: string;
+  personaName: string;
+  personaSystemPrompt: string | null;
+}
+
+export interface GenerateThreadsPostResult {
+  /** Main post parts (first = main, rest = "Add to thread" parts). No links in first part. */
+  parts: string[];
+  /** Comment with links to post as a reply */
+  linkComment: string | null;
+}
+
 function createModel(modelName: string): LanguageModel {
   if (config.LLM_PROVIDER === 'openrouter') {
     if (!config.OPENROUTER_API_KEY) {
@@ -134,6 +147,97 @@ CRITICAL RULES:
     }
 
     return result.trim();
+  }
+
+  /**
+   * Generate a multi-part Threads post from ad content.
+   * - Main post: no links, max 500 chars
+   * - Additional parts via "Add to thread": max 500 chars each
+   * - Links go in a separate comment reply
+   */
+  async generateThreadsPost(
+    input: GenerateThreadsPostInput
+  ): Promise<GenerateThreadsPostResult> {
+    const personaHint = input.personaSystemPrompt
+      ? `Your personality/voice: ${input.personaSystemPrompt}\nAdapt the tone to match this personality.`
+      : 'Write in a casual, authentic social media voice.';
+
+    const systemPrompt = `You are rewriting ad content for Meta Threads (social media platform).
+
+${personaHint}
+
+CRITICAL RULES:
+1. Threads has a 500 character limit PER POST.
+2. LINKS CANNOT be placed in the main post on Threads. They must go in a separate comment.
+3. Extract ALL links/URLs from the ad content and put them in the "linkComment" field.
+4. The main post text should reference the link naturally (e.g., "link in the comments", "check the link below").
+5. If the content is long, split it into multiple parts (up to 3 parts). Each part max 500 chars.
+6. Make it feel like a personal recommendation, NOT a copy-pasted ad.
+7. Preserve key facts (product names, stats, numbers) but NOT URLs in the main text.
+8. Do NOT add hashtags unless they were in the original.
+
+Output ONLY valid JSON with this structure (no markdown, no explanation):
+{
+  "parts": ["first post text (main)", "second post text (optional)", ...],
+  "linkComment": "Check it out: https://... (or null if no links)"
+}`;
+
+    const { text } = await generateText({
+      model: createModel(config.OPENAI_MODEL_POST_AD),
+      system: systemPrompt,
+      prompt: `Ad content to rewrite for Threads (extract all links to linkComment):\n\n${input.adContent}`
+    });
+
+    const cleaned = text
+      .trim()
+      .replace(/^```json\s*/i, '')
+      .replace(/\s*```\s*$/i, '');
+    const parsed = JSON.parse(cleaned) as {
+      parts: string[];
+      linkComment: string | null;
+    };
+
+    // Validate and truncate parts
+    const parts = (parsed.parts ?? []).map((p: string) => {
+      const trimmed = String(p).trim();
+      return trimmed.length > 500 ? trimmed.substring(0, 497) + '...' : trimmed;
+    }).filter((p: string) => p.length > 0);
+
+    if (parts.length === 0) {
+      throw new Error('LLM returned empty parts for Threads post');
+    }
+
+    const linkComment = parsed.linkComment
+      ? String(parsed.linkComment).trim().substring(0, 500)
+      : null;
+
+    return { parts, linkComment };
+  }
+
+  async generateThreadsOrganicPost(input: {
+    personaName: string;
+    personaSystemPrompt: string | null;
+    categoryName?: string | null;
+  }): Promise<string> {
+    const personaDesc = input.personaSystemPrompt
+      ? `Personality: ${input.personaSystemPrompt}`
+      : 'Generic social media user';
+    const categoryHint = input.categoryName
+      ? `Category/niche: ${input.categoryName}.`
+      : '';
+
+    const systemPrompt = `You are a social media account (${input.personaName}). ${personaDesc}. ${categoryHint}
+
+Generate ONE short organic post (not advertising) for Meta Threads. Examples: opinion, tip, observation, question, hot take, meme-style comment. Be authentic and varied. Output ONLY the post text. Max 500 characters. No hashtag spam. No links.`;
+
+    const { text } = await generateText({
+      model: createModel(config.OPENAI_MODEL_ORGANIC_POST),
+      system: systemPrompt,
+      prompt: 'Generate a single organic post for Threads now.'
+    });
+
+    const trimmed = text.trim();
+    return trimmed.length > 500 ? trimmed.substring(0, 497) + '...' : trimmed;
   }
 
   async generatePersonaAndCategoryForAccount(

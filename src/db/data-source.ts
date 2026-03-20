@@ -19,6 +19,7 @@ import { CampaignTargetCategories1700000002000 } from './migrations/170000000200
 import { OrganicPostTracking1700000003000 } from './migrations/1700000003000-organic-post-tracking.js';
 import { OAuthPending1700000004000 } from './migrations/1700000004000-oauth-pending.js';
 import { AccountPremium1700000005000 } from './migrations/1700000005000-account-premium.js';
+import { ThreadsSupport1700000006000 } from './migrations/1700000006000-threads-support.js';
 
 const dbPath = path.resolve(process.cwd(), config.DATABASE_PATH);
 
@@ -36,7 +37,7 @@ export const appDataSource = new DataSource({
     AdPostEntity,
     RegistrationQueueEntity
   ],
-  migrations: [Init1700000000000, RegistrationQueue1700000001000, CampaignTargetCategories1700000002000, OrganicPostTracking1700000003000, OAuthPending1700000004000, AccountPremium1700000005000],
+  migrations: [Init1700000000000, RegistrationQueue1700000001000, CampaignTargetCategories1700000002000, OrganicPostTracking1700000003000, OAuthPending1700000004000, AccountPremium1700000005000, ThreadsSupport1700000006000],
   logging: false,
   synchronize: false
 });

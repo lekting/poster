@@ -9,6 +9,7 @@ import { PostService } from './post/post-service.js';
 import { RegistrationService } from './registration/registration-service.js';
 import { UserService } from './user/user-service.js';
 import { XCamoufoxService } from './x-camoufox/x-camoufox-service.js';
+import { ThreadsCamoufoxService } from './threads-camoufox/threads-camoufox-service.js';
 
 export interface AppServices {
   userService: UserService;
@@ -20,6 +21,7 @@ export interface AppServices {
   registrationService: RegistrationService;
   llmService: LLMService;
   xCamoufoxService: XCamoufoxService;
+  threadsCamoufoxService: ThreadsCamoufoxService;
   mailTmService: MailTmService;
 }
 
@@ -34,6 +36,7 @@ export function buildServices(ds: DataSource): AppServices {
     registrationService: new RegistrationService(ds),
     llmService: new LLMService(),
     xCamoufoxService: new XCamoufoxService(),
+    threadsCamoufoxService: new ThreadsCamoufoxService(),
     mailTmService: new MailTmService()
   };
 }

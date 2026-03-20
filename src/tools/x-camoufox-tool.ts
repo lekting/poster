@@ -3,6 +3,7 @@
  * All account registration and posting goes through browser automation.
  */
 import { Page } from 'playwright';
+import path from 'path';
 import { XBrowserTool } from './x-browser.js';
 import { logger } from '../shared/logger.js';
 
@@ -25,6 +26,7 @@ export interface RegisterAccountResult {
 export interface PostTweetInput {
   authToken: string;
   text: string;
+  mediaPaths?: string[];
 }
 
 export interface PostTweetResult {
@@ -37,6 +39,12 @@ export interface PostTweetResult {
 const SIGNUP_URL = 'https://x.com/i/flow/signup';
 const DEFAULT_TIMEOUT = 30000;
 const SCREENSHOTS_DIR = 'screenshots';
+const MEDIA_INPUT_SELECTORS = [
+  'input[data-testid="fileInput"]',
+  'input[type="file"][accept*="image"]',
+  'input[type="file"][accept*="video"]',
+  'input[type="file"]'
+];
 
 async function capturePageDiagnostics(
   page: Page,
@@ -119,6 +127,104 @@ async function waitAndClick(
     }
   }
   return false;
+}
+
+async function uploadMediaFiles(
+  page: Page,
+  mediaPaths: string[]
+): Promise<{ success: boolean; error?: string }> {
+  if (mediaPaths.length === 0) return { success: true };
+
+  const validPaths = mediaPaths
+    .map((filePath) => path.resolve(filePath))
+    .filter(Boolean);
+
+  logger.info(
+    { count: validPaths.length, mediaPaths: validPaths },
+    'postTweet: uploading media'
+  );
+
+  let uploaded = false;
+  for (const selector of MEDIA_INPUT_SELECTORS) {
+    try {
+      const input = page.locator(selector).first();
+      await input.waitFor({ state: 'attached', timeout: 5000 });
+      await input.setInputFiles(validPaths, { timeout: 15000 });
+      uploaded = true;
+      logger.info({ selector }, 'postTweet: media files selected');
+      break;
+    } catch (err) {
+      logger.debug({ err, selector }, 'postTweet: media input selector failed');
+    }
+  }
+
+  if (!uploaded) {
+    return { success: false, error: 'Could not find media upload input' };
+  }
+
+  const uploadState = await page
+    .waitForFunction(
+      () => {
+        const errorNode =
+          document.querySelector('[data-testid="toast"]') ??
+          document.querySelector('[data-testid="inline_error"]');
+        const errorText = errorNode?.textContent?.toLowerCase() ?? '';
+        if (
+          errorText.includes('failed') ||
+          errorText.includes('invalid') ||
+          errorText.includes('unsupported') ||
+          errorText.includes('too large')
+        ) {
+          return 'error';
+        }
+
+        const processing = Array.from(
+          document.querySelectorAll('[role="progressbar"], [aria-valuetext]')
+        ).some((node) => {
+          const label =
+            node.getAttribute('aria-label')?.toLowerCase() ??
+            node.getAttribute('aria-valuetext')?.toLowerCase() ??
+            '';
+          return (
+            label.includes('upload') ||
+            label.includes('processing') ||
+            label.includes('loading')
+          );
+        });
+
+        if (processing) return false;
+
+        const mediaPreview = document.querySelector(
+          '[data-testid="attachments"], [data-testid="tweetPhoto"], [data-testid="previewInterstitial"], [aria-label*="media" i], [aria-label*="image" i], [aria-label*="video" i]'
+        );
+
+        return mediaPreview ? 'ready' : false;
+      },
+      { timeout: 60000 }
+    )
+    .then((handle) => handle.jsonValue() as Promise<'ready' | 'error'>)
+    .catch(() => 'timeout' as const);
+
+  if (uploadState === 'timeout') {
+    logger.warn('postTweet: media preview wait timed out');
+  }
+
+  if (uploadState === 'error' || uploadState === 'timeout') {
+    const uploadError = await capturePageDiagnostics(page, 'postTweet-media');
+    if (uploadError) {
+      const lower = uploadError.toLowerCase();
+      if (
+        lower.includes('failed') ||
+        lower.includes('invalid') ||
+        lower.includes('unsupported') ||
+        lower.includes('too large')
+      ) {
+        return { success: false, error: uploadError };
+      }
+    }
+  }
+
+  return { success: true };
 }
 
 export class XCamoufoxTool {
@@ -386,14 +492,21 @@ export class XCamoufoxTool {
                 node.focus();
                 return document.execCommand('insertText', false, line);
               }, lines[i]);
-              if (!ok) { insertOk = false; break; }
+              if (!ok) {
+                insertOk = false;
+                break;
+              }
             }
           }
 
           if (!insertOk) {
             // Fallback: clear and use keyboard.type which handles \n natively
-            logger.warn('postTweet: execCommand failed, falling back to keyboard.type');
-            await el.evaluate((node) => { node.textContent = ''; }, null);
+            logger.warn(
+              'postTweet: execCommand failed, falling back to keyboard.type'
+            );
+            await el.evaluate((node) => {
+              node.textContent = '';
+            }, null);
             await page.keyboard.type(input.text, { delay: 15 });
           }
 
@@ -410,6 +523,21 @@ export class XCamoufoxTool {
       if (!composed) {
         logger.warn('postTweet: could not find compose area');
         return { success: false, error: 'Could not find compose area' };
+      }
+
+      if (input.mediaPaths && input.mediaPaths.length > 0) {
+        const uploadResult = await uploadMediaFiles(page, input.mediaPaths);
+        if (!uploadResult.success) {
+          logger.warn(
+            { error: uploadResult.error },
+            'postTweet: media upload failed'
+          );
+          return {
+            success: false,
+            error: uploadResult.error,
+            isPremium
+          };
+        }
       }
 
       await page.waitForTimeout(1000);
@@ -432,34 +560,48 @@ export class XCamoufoxTool {
             await btn.waitFor({ state: 'visible', timeout: 5000 });
             await btn.click();
             submitted = true;
-            logger.info({ selector: sel, attempt }, 'postTweet: Post button clicked');
+            logger.info(
+              { selector: sel, attempt },
+              'postTweet: Post button clicked'
+            );
             break;
           } catch {
             continue;
           }
         }
         if (!submitted) {
-          logger.warn('postTweet: Post button not found, falling back to Ctrl+Enter');
+          logger.warn(
+            'postTweet: Post button not found, falling back to Ctrl+Enter'
+          );
           await page.keyboard.press('Control+Enter');
         }
 
         // Wait for success OR error signals
-        logger.info({ attempt }, 'postTweet: waiting for confirmation or error');
+        logger.info(
+          { attempt },
+          'postTweet: waiting for confirmation or error'
+        );
         const outcome = await page
           .waitForFunction(
             () => {
+              const currentUrl = location.href;
               const compose = document.querySelector(
                 '[data-testid="tweetTextarea_0"]'
               );
-              const hasStatus = location.href.includes('/status/');
+              const hasStatus = currentUrl.includes('/status/');
+              const leftCompose =
+                !currentUrl.includes('/compose/post') &&
+                !currentUrl.includes('/login') &&
+                !currentUrl.includes('/flow/login');
 
-              if (!compose || hasStatus)
+              if (leftCompose || !compose || hasStatus)
                 return { done: true, success: true, error: null };
 
               const toast = document.querySelector('[data-testid="toast"]');
               if (toast) {
                 const toastText = toast.textContent?.trim() ?? '';
-                if (!toastText) return { done: true, success: true, error: null };
+                if (!toastText)
+                  return { done: true, success: true, error: null };
                 const lower = toastText.toLowerCase();
                 if (lower.includes('sent') || lower.includes('posted')) {
                   return { done: true, success: true, error: null };
@@ -471,7 +613,11 @@ export class XCamoufoxTool {
                 '[data-testid="inline_error"]'
               );
               if (inlineError?.textContent?.trim()) {
-                return { done: true, success: false, error: inlineError.textContent.trim() };
+                return {
+                  done: true,
+                  success: false,
+                  error: inlineError.textContent.trim()
+                };
               }
 
               const alerts = document.querySelectorAll('[role="alert"]');
@@ -483,28 +629,49 @@ export class XCamoufoxTool {
                   return { done: true, success: false, error: t };
               }
 
-              return { done: false, success: false, error: null };
+              return false;
             },
             { timeout: 15000 }
           )
-          .then((handle) => handle.jsonValue())
-          .catch(() => ({ done: false, success: false, error: null as string | null }));
+          .then(
+            (handle) =>
+              handle.jsonValue() as Promise<{
+                done: boolean;
+                success: boolean;
+                error: string | null;
+              }>
+          )
+          .catch(() => ({
+            done: false,
+            success: false,
+            error: null as string | null
+          }));
 
         const tweetUrl = page.url();
         const tweetIdMatch = tweetUrl.match(/status\/(\d+)/);
 
-        logger.info({ tweetUrl, outcome, attempt, tweetId: tweetIdMatch?.[1] ?? null }, 'postTweet: attempt result');
+        logger.info(
+          { tweetUrl, outcome, attempt, tweetId: tweetIdMatch?.[1] ?? null },
+          'postTweet: attempt result'
+        );
 
         // Success
         if (outcome.success || tweetIdMatch) {
-          return { success: true, tweetId: tweetIdMatch?.[1] ?? undefined, isPremium };
+          return {
+            success: true,
+            tweetId: tweetIdMatch?.[1] ?? undefined,
+            isPremium
+          };
         }
 
         lastError = outcome.error;
 
         // Error from X — dismiss toast/error and retry
         if (outcome.error && attempt < MAX_POST_ATTEMPTS) {
-          logger.warn({ error: outcome.error, attempt }, 'postTweet: X error, will retry');
+          logger.warn(
+            { error: outcome.error, attempt },
+            'postTweet: X error, will retry'
+          );
 
           // Dismiss the toast by clicking it or waiting for it to disappear
           try {
@@ -512,13 +679,17 @@ export class XCamoufoxTool {
             if (await toast.isVisible().catch(() => false)) {
               await toast.click().catch(() => {});
             }
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
 
           // Wait for toast to disappear
-          await page.waitForFunction(
-            () => !document.querySelector('[data-testid="toast"]'),
-            { timeout: 5000 }
-          ).catch(() => {});
+          await page
+            .waitForFunction(
+              () => !document.querySelector('[data-testid="toast"]'),
+              { timeout: 5000 }
+            )
+            .catch(() => {});
 
           // Small delay before retry
           await page.waitForTimeout(2000);
@@ -550,7 +721,7 @@ export class XCamoufoxTool {
       return { success: false, error: msg };
     } finally {
       logger.info('postTweet: closing browser');
-      // await browser.close();
+      await browser.close();
     }
   }
 }

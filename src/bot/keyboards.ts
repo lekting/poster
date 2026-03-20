@@ -20,8 +20,9 @@ export function accountsKeyboard(
       kb.text(`@${a.handle}`, `account:details:${a.id}`).row();
     }
   }
-  kb.text('🤖 Register new (auto)', 'account:register').row();
-  kb.text('🔑 Add account (auth_token)', 'account:add_manual').row();
+  kb.text('🤖 Register X (auto)', 'account:register').row();
+  kb.text('🔑 Add X account (auth_token)', 'account:add_manual').row();
+  kb.text('🧵 Add Threads account', 'account:add_threads').row();
   kb.text('🏠 Main menu', 'menu:main');
   return kb;
 }

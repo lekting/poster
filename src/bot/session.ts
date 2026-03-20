@@ -1,5 +1,6 @@
 export type AwaitingInput =
   | 'account_credentials'
+  | 'threads_credentials'
   | 'reg_count'
   | 'persona_name'
   | 'persona_slug'

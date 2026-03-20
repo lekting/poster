@@ -112,6 +112,53 @@ export class TelegramBotApp {
         return;
       }
 
+      if (ctx.session.awaitingInput === 'threads_credentials') {
+        // Format: username:password:2fa_key
+        // Support multiple accounts — one per line
+        const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+        let added = 0;
+        const errors: string[] = [];
+
+        for (const line of lines) {
+          const parts = line.split(':').map((p) => p.trim());
+          if (parts.length < 3) {
+            errors.push(`Invalid format (expected username:password:2fa\\_key): ${escMd(line.slice(0, 40))}...`);
+            continue;
+          }
+          const [username, password, ...rest] = parts;
+          const totpSecret = rest.join(':').trim(); // 2FA key might contain colons in base32
+          if (!username || !password || !totpSecret) {
+            errors.push(`Missing field: ${escMd(line.slice(0, 40))}...`);
+            continue;
+          }
+          const account = await this.services.accountService.create({
+            platform: 'threads',
+            handle: username,
+            username,
+            encryptedTokens: null,
+            useCamoufox: 1
+          });
+          await this.services.accountService.setPassword(
+            account.id,
+            encryptText(password)
+          );
+          await this.services.accountService.set2faSecret(
+            account.id,
+            encryptText(totpSecret)
+          );
+          await this.services.accountService.updateStatus(account.id, 'active');
+          added++;
+        }
+
+        ctx.session.awaitingInput = null;
+        const msgParts: string[] = [];
+        if (added > 0) msgParts.push(`Added *${added}* Threads account(s).`);
+        if (errors.length > 0) msgParts.push(`Errors:\n${errors.join('\n')}`);
+        await ctx.reply(msgParts.join('\n\n') || 'No accounts added.', { parse_mode: PARSE_MODE });
+        if (added > 0) await this.renderAccounts(ctx);
+        return;
+      }
+
       if (ctx.session.awaitingInput === 'reg_count') {
         const num = parseInt(text.trim(), 10);
         if (isNaN(num) || num < 1 || num > 20) {
@@ -204,7 +251,7 @@ export class TelegramBotApp {
         }
         ctx.session.pendingAdContent = text;
         ctx.session.awaitingInput = 'ad_media';
-        await ctx.reply('Send media URLs (one per line) or `-` to skip:', { parse_mode: PARSE_MODE });
+        await ctx.reply('Send media URLs for images/videos (one per line) or `-` to skip:', { parse_mode: PARSE_MODE });
         return;
       }
       if (ctx.session.awaitingInput === 'ad_media') {
@@ -265,7 +312,14 @@ export class TelegramBotApp {
         ctx.session.awaitingInput = 'account_credentials';
         await this.safeEdit(
           ctx,
-          '🔑 *Add account manually*\n\nSend credentials in format:\n`login : pass : email : pass : phone : token : cookies`\n\nYou can send multiple accounts, one per line.',
+          '🔑 *Add X account manually*\n\nSend credentials in format:\n`login : pass : email : pass : phone : token : cookies`\n\nYou can send multiple accounts, one per line.',
+          accountsKeyboard()
+        );
+      } else if (data === 'account:add_threads') {
+        ctx.session.awaitingInput = 'threads_credentials';
+        await this.safeEdit(
+          ctx,
+          '🧵 *Add Threads account*\n\nSend credentials in format:\n`username:password:2fa_key`\n\nThe 2FA key is your TOTP secret (base32). It will be stored encrypted and used to generate 2FA codes during login.\n\nYou can send multiple accounts, one per line.',
           accountsKeyboard()
         );
       } else if (data.startsWith('account:persona:')) {
@@ -418,10 +472,14 @@ export class TelegramBotApp {
           return;
         }
         const targetCategoryIds = this.services.campaignService.getTargetCategoryIds(campaign);
-        const accounts =
-          targetCategoryIds.length > 0
-            ? await this.services.accountService.getByCategoryIds(targetCategoryIds)
-            : await this.services.accountService.getAll('x');
+        let accounts;
+        if (targetCategoryIds.length > 0) {
+          accounts = await this.services.accountService.getByCategoryIds(targetCategoryIds);
+        } else {
+          const xAccounts = await this.services.accountService.getAll('x');
+          const threadsAccounts = await this.services.accountService.getAll('threads');
+          accounts = [...xAccounts, ...threadsAccounts];
+        }
         const activeAccounts = accounts.filter((a) => a.status === 'active' && a.personaId);
         if (activeAccounts.length === 0) {
           await ctx.answerCallbackQuery({ text: 'No active accounts with persona in target categories' });

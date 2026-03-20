@@ -101,6 +101,36 @@ export class AccountService {
     return this.repo.save(entity);
   }
 
+  async setCookies(
+    accountId: string,
+    encryptedCookies: string
+  ): Promise<PlatformAccountEntity | null> {
+    const entity = await this.repo.findOne({ where: { id: accountId } });
+    if (!entity) return null;
+    entity.encryptedCookies = encryptedCookies;
+    return this.repo.save(entity);
+  }
+
+  async set2faSecret(
+    accountId: string,
+    encrypted2faSecret: string
+  ): Promise<PlatformAccountEntity | null> {
+    const entity = await this.repo.findOne({ where: { id: accountId } });
+    if (!entity) return null;
+    entity.encrypted2faSecret = encrypted2faSecret;
+    return this.repo.save(entity);
+  }
+
+  async setPassword(
+    accountId: string,
+    encryptedPassword: string
+  ): Promise<PlatformAccountEntity | null> {
+    const entity = await this.repo.findOne({ where: { id: accountId } });
+    if (!entity) return null;
+    entity.encryptedPassword = encryptedPassword;
+    return this.repo.save(entity);
+  }
+
   async delete(id: string): Promise<boolean> {
     const result = await this.repo.delete(id);
     return (result.affected ?? 0) > 0;
