@@ -1,132 +1,234 @@
 import { InlineKeyboard } from 'grammy';
 
-export function mainMenuKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('📱 Accounts', 'menu:accounts')
-    .text('🎭 Personas', 'menu:personas')
-    .row()
-    .text('📂 Categories', 'menu:categories')
-    .text('📢 Campaigns', 'menu:campaigns')
-    .row()
-    .text('📤 Post', 'menu:post');
+export const PAGE_SIZE = 8;
+
+export function totalPages(count: number): number {
+  return Math.max(1, Math.ceil(count / PAGE_SIZE));
 }
 
-export function accountsKeyboard(
-  accounts?: Array<{ id: string; handle: string }>
+/* ---------------------------------------------------------------- */
+/*  Generic pagination builder                                       */
+/* ---------------------------------------------------------------- */
+
+export function paginatedList(
+  items: Array<{ id: string; label: string }>,
+  page: number,
+  callbackPrefix: string,
+  pagePrefix: string,
+  opts?: {
+    actions?: Array<{ label: string; data: string }>;
+    back?: string;
+  },
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
-  if (accounts?.length) {
-    for (const a of accounts) {
-      kb.text(`@${a.handle}`, `account:details:${a.id}`).row();
+  const tp = totalPages(items.length);
+  const p = Math.max(0, Math.min(page, tp - 1));
+  const slice = items.slice(p * PAGE_SIZE, (p + 1) * PAGE_SIZE);
+
+  for (const item of slice) {
+    kb.text(item.label, `${callbackPrefix}:${item.id}`).row();
+  }
+
+  if (tp > 1) {
+    if (p > 0) kb.text('◀️', `${pagePrefix}:${p - 1}`);
+    kb.text(`📄 ${p + 1}/${tp}`, 'noop');
+    if (p < tp - 1) kb.text('▶️', `${pagePrefix}:${p + 1}`);
+    kb.row();
+  }
+
+  if (opts?.actions) {
+    for (const a of opts.actions) {
+      kb.text(a.label, a.data).row();
     }
   }
-  kb.text('🤖 Register X (auto)', 'account:register').row();
-  kb.text('🔑 Add X account (auth_token)', 'account:add_manual').row();
-  kb.text('🧵 Add Threads account', 'account:add_threads').row();
-  kb.text('🏠 Main menu', 'menu:main');
+
+  if (opts?.back) kb.text('🔙 Back', opts.back);
   return kb;
 }
 
-export function accountDetailsKeyboard(accountId: string): InlineKeyboard {
+/* ---------------------------------------------------------------- */
+/*  Main menu                                                        */
+/* ---------------------------------------------------------------- */
+
+export function mainMenuKb(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('Assign Persona', `account:persona:${accountId}`)
-    .text('Assign Category', `account:category:${accountId}`)
+    .text('📱 Accounts', 'nav:accounts')
+    .text('🎭 Personas', 'nav:personas')
     .row()
-    .text('🗑 Delete', `account:delete:${accountId}`)
-    .row()
-    .text('◀ Back', 'menu:accounts');
+    .text('📂 Categories', 'nav:categories')
+    .text('📢 Campaigns', 'nav:campaigns');
 }
 
-export function personasKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('➕ Create Persona', 'persona:add')
-    .row()
-    .text('🏠 Main menu', 'menu:main');
-}
+/* ---------------------------------------------------------------- */
+/*  Accounts                                                         */
+/* ---------------------------------------------------------------- */
 
-export function personaSelectKeyboard(personas: Array<{ id: string; name: string }>): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  for (const p of personas) {
-    kb.text(p.name, `persona:select:${p.id}`).row();
-  }
-  kb.text('◀ Back', 'menu:accounts');
-  return kb;
-}
-
-export function categoriesKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('➕ Create Category', 'category:add')
-    .row()
-    .text('🏠 Main menu', 'menu:main');
-}
-
-export function categorySelectKeyboard(categories: Array<{ id: string; name: string }>): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  for (const c of categories) {
-    kb.text(c.name, `category:select:${c.id}`).row();
-  }
-  kb.text('◀ Back', 'menu:accounts');
-  return kb;
-}
-
-export function campaignsKeyboard(
-  campaigns?: Array<{ id: string; name: string }>
+export function accountsKb(
+  accounts: Array<{ id: string; handle: string }>,
+  page: number,
 ): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  if (campaigns?.length) {
-    for (const c of campaigns) {
-      kb.text(c.name, `campaign:details:${c.id}`).row();
-    }
-  }
-  kb.text('➕ Create Campaign', 'campaign:add').row();
-  kb.text('🏠 Main menu', 'menu:main');
-  return kb;
+  return paginatedList(
+    accounts.map((a) => ({ id: a.id, label: `📱 @${a.handle}` })),
+    page,
+    'account:details',
+    'page:accounts',
+    {
+      actions: [
+        { label: '🤖 Register X (auto)', data: 'account:register' },
+        { label: '🔑 Add X (auth_token)', data: 'account:add_manual' },
+        { label: '🧵 Add Threads', data: 'account:add_threads' },
+      ],
+      back: 'nav:main',
+    },
+  );
 }
 
-export function campaignDetailsKeyboard(campaignId: string): InlineKeyboard {
+export function accountDetailKb(accountId: string): InlineKeyboard {
   return new InlineKeyboard()
-    .text('➕ Add Material', `campaign:material:${campaignId}`)
-    .text('📂 Target Categories', `campaign:target_categories:${campaignId}`)
+    .text('🎭 Persona', `account:persona:${accountId}`)
+    .text('📂 Category', `account:category:${accountId}`)
     .row()
-    .text('🗑 Delete', `campaign:delete:${campaignId}`)
+    .text('🗑 Delete', `account:delete_ask:${accountId}`)
     .row()
-    .text('◀ Back', 'menu:campaigns');
+    .text('🔙 Back', 'nav:accounts');
 }
 
-export function campaignTargetCategoriesKeyboard(
+/* ---------------------------------------------------------------- */
+/*  Personas                                                         */
+/* ---------------------------------------------------------------- */
+
+export function personasKb(
+  personas: Array<{ id: string; name: string }>,
+  page: number,
+): InlineKeyboard {
+  return paginatedList(
+    personas.map((p) => ({ id: p.id, label: `🎭 ${p.name}` })),
+    page,
+    'persona:details',
+    'page:personas',
+    {
+      actions: [{ label: '➕ Create Persona', data: 'persona:add' }],
+      back: 'nav:main',
+    },
+  );
+}
+
+/** Persona picker used when assigning persona to an account */
+export function personaPickerKb(
+  personas: Array<{ id: string; name: string }>,
+  page: number,
+): InlineKeyboard {
+  return paginatedList(
+    personas.map((p) => ({ id: p.id, label: `🎭 ${p.name}` })),
+    page,
+    'persona:pick',
+    'page:persona_picker',
+    { back: 'nav:back' },
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/*  Categories                                                       */
+/* ---------------------------------------------------------------- */
+
+export function categoriesKb(
+  categories: Array<{ id: string; name: string }>,
+  page: number,
+): InlineKeyboard {
+  return paginatedList(
+    categories.map((c) => ({ id: c.id, label: `📂 ${c.name}` })),
+    page,
+    'category:details',
+    'page:categories',
+    {
+      actions: [{ label: '➕ Create Category', data: 'category:add' }],
+      back: 'nav:main',
+    },
+  );
+}
+
+/** Category picker used when assigning category to an account */
+export function categoryPickerKb(
+  categories: Array<{ id: string; name: string }>,
+  page: number,
+): InlineKeyboard {
+  return paginatedList(
+    categories.map((c) => ({ id: c.id, label: `📂 ${c.name}` })),
+    page,
+    'category:pick',
+    'page:category_picker',
+    { back: 'nav:back' },
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/*  Campaigns                                                        */
+/* ---------------------------------------------------------------- */
+
+export function campaignsKb(
+  campaigns: Array<{ id: string; name: string }>,
+  page: number,
+): InlineKeyboard {
+  return paginatedList(
+    campaigns.map((c) => ({ id: c.id, label: `📢 ${c.name}` })),
+    page,
+    'campaign:details',
+    'page:campaigns',
+    {
+      actions: [{ label: '➕ Create Campaign', data: 'campaign:add' }],
+      back: 'nav:main',
+    },
+  );
+}
+
+export function campaignDetailKb(campaignId: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('📎 Add Material', `campaign:material:${campaignId}`)
+    .text('🎯 Targets', `campaign:targets:${campaignId}`)
+    .row()
+    .text('🚀 Launch', `campaign:post_ask:${campaignId}`)
+    .row()
+    .text('🗑 Delete', `campaign:delete_ask:${campaignId}`)
+    .row()
+    .text('🔙 Back', 'nav:campaigns');
+}
+
+export function targetCategoriesKb(
   campaignId: string,
   categories: Array<{ id: string; name: string }>,
-  selectedIds: string[]
+  selectedIds: string[],
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const c of categories) {
-    const isSelected = selectedIds.includes(c.id);
-    kb.text(isSelected ? `✓ ${c.name}` : c.name, `category:target_toggle:${c.id}`).row();
+    const sel = selectedIds.includes(c.id);
+    kb.text(sel ? `✅ ${c.name}` : `⬜ ${c.name}`, `target:toggle:${c.id}`).row();
   }
-  kb.text('✅ Done', `campaign:target_done:${campaignId}`).row();
-  kb.text('◀ Back', `campaign:details:${campaignId}`);
+  kb.text('✅ Done', `target:done:${campaignId}`).row();
+  kb.text('🔙 Back', `campaign:details:${campaignId}`);
   return kb;
 }
 
-export function campaignSelectKeyboard(campaigns: Array<{ id: string; name: string }>): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  for (const c of campaigns) {
-    kb.text(c.name, `campaign:select:${c.id}`).row();
-  }
-  kb.text('◀ Back', 'menu:main');
-  return kb;
+/* ---------------------------------------------------------------- */
+/*  Confirm / Cancel                                                 */
+/* ---------------------------------------------------------------- */
+
+export function confirmDeleteKb(
+  prefix: string,
+  entityId: string,
+  cancelTarget: string,
+): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('🗑 Yes, delete', `${prefix}:delete_yes:${entityId}`)
+    .text('↩️ Cancel', cancelTarget);
 }
 
-export function postCampaignKeyboard(): InlineKeyboard {
+export function postConfirmKb(campaignId: string): InlineKeyboard {
   return new InlineKeyboard()
-    .text('Select Campaign', 'post:select_campaign')
+    .text('🚀 Launch', `campaign:post_yes:${campaignId}`)
     .row()
-    .text('🏠 Main menu', 'menu:main');
+    .text('🔙 Back', `campaign:details:${campaignId}`);
 }
 
-export function postConfirmKeyboard(campaignId: string): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('✅ Start Posting', `post:confirm:${campaignId}`)
-    .row()
-    .text('◀ Back', 'menu:post');
+export function cancelKb(): InlineKeyboard {
+  return new InlineKeyboard().text('↩️ Cancel', 'cancel_input');
 }

@@ -1,4 +1,4 @@
-import { firefox, Browser, BrowserContext, Page } from 'playwright';
+import { firefox, Browser, BrowserContext, Page, Cookie } from 'playwright';
 import { launchOptions as camoufoxLaunchOptions } from 'camoufox-js';
 import { config } from '../config/index.js';
 import { logger } from '../shared/logger.js';
@@ -37,7 +37,7 @@ export class XBrowserTool {
     await this.context.addCookies(cookies);
   }
 
-  async getCookies(urls?: string | string[]): Promise<ReturnType<BrowserContext['cookies']> extends Promise<infer R> ? R : never> {
+  async getCookies(urls?: string | string[]): Promise<Cookie[]> {
     if (!this.context) throw new Error('Browser not launched');
     return urls ? this.context.cookies(urls) : this.context.cookies();
   }

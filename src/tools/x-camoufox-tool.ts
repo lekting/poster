@@ -51,31 +51,25 @@ async function capturePageDiagnostics(
   label: string
 ): Promise<string | null> {
   try {
-    // Take screenshot
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `${SCREENSHOTS_DIR}/${label}-${ts}.png`;
     await page.screenshot({ path: filename, fullPage: true });
     logger.info({ filename }, `${label}: screenshot saved`);
 
-    // Capture any visible error/toast text on the page
     const diagnostics = await page.evaluate(() => {
       const results: Record<string, string | null> = {};
-      // Toast messages
       const toast = document.querySelector('[data-testid="toast"]');
       results.toast = toast?.textContent?.trim() ?? null;
-      // Inline errors
       const inlineError = document.querySelector(
         '[data-testid="inline_error"]'
       );
       results.inlineError = inlineError?.textContent?.trim() ?? null;
-      // Any alert/error role elements
       const alerts = Array.from(document.querySelectorAll('[role="alert"]'));
       results.alerts =
         alerts
           .map((a) => a.textContent?.trim())
           .filter(Boolean)
           .join(' | ') || null;
-      // Page title and URL
       results.url = location.href;
       results.title = document.title;
       return results;
@@ -90,43 +84,41 @@ async function capturePageDiagnostics(
   }
 }
 
+/** Race all selectors in parallel — returns as soon as the first one is found. */
 async function waitAndFill(
   page: Page,
   selectors: string[],
   value: string,
-  label: string
+  label: string,
+  timeout = 5000
 ): Promise<boolean> {
-  for (const sel of selectors) {
-    try {
-      const el = page.locator(sel).first();
-      await el.waitFor({ state: 'visible', timeout: 5000 });
-      await el.fill(value);
-      logger.debug({ label, selector: sel }, 'Filled field');
-      return true;
-    } catch {
-      continue;
-    }
+  try {
+    const el = page.locator(selectors.join(', ')).first();
+    await el.waitFor({ state: 'visible', timeout });
+    await el.fill(value);
+    logger.debug({ label }, 'Filled field');
+    return true;
+  } catch {
+    return false;
   }
-  return false;
 }
 
+/** Race all selectors in parallel — clicks the first one found. */
 async function waitAndClick(
   page: Page,
   selectors: string[],
-  label: string
+  label: string,
+  timeout = 5000
 ): Promise<boolean> {
-  for (const sel of selectors) {
-    try {
-      const el = page.locator(sel).first();
-      await el.waitFor({ state: 'visible', timeout: 5000 });
-      await el.click();
-      logger.debug({ label, selector: sel }, 'Clicked');
-      return true;
-    } catch {
-      continue;
-    }
+  try {
+    const el = page.locator(selectors.join(', ')).first();
+    await el.waitFor({ state: 'visible', timeout });
+    await el.click();
+    logger.debug({ label }, 'Clicked');
+    return true;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 async function uploadMediaFiles(
@@ -181,14 +173,14 @@ async function uploadMediaFiles(
         const processing = Array.from(
           document.querySelectorAll('[role="progressbar"], [aria-valuetext]')
         ).some((node) => {
-          const label =
+          const lbl =
             node.getAttribute('aria-label')?.toLowerCase() ??
             node.getAttribute('aria-valuetext')?.toLowerCase() ??
             '';
           return (
-            label.includes('upload') ||
-            label.includes('processing') ||
-            label.includes('loading')
+            lbl.includes('upload') ||
+            lbl.includes('processing') ||
+            lbl.includes('loading')
           );
         });
 
@@ -205,11 +197,10 @@ async function uploadMediaFiles(
     .then((handle) => handle.jsonValue() as Promise<'ready' | 'error'>)
     .catch(() => 'timeout' as const);
 
-  if (uploadState === 'timeout') {
-    logger.warn('postTweet: media preview wait timed out');
-  }
-
   if (uploadState === 'error' || uploadState === 'timeout') {
+    if (uploadState === 'timeout') {
+      logger.warn('postTweet: media preview wait timed out');
+    }
     const uploadError = await capturePageDiagnostics(page, 'postTweet-media');
     if (uploadError) {
       const lower = uploadError.toLowerCase();
@@ -225,6 +216,42 @@ async function uploadMediaFiles(
   }
 
   return { success: true };
+}
+
+/** Insert text into a contenteditable using execCommand, with keyboard.type fallback. */
+async function insertText(
+  page: Page,
+  el: ReturnType<Page['locator']>,
+  text: string
+): Promise<void> {
+  await el.click();
+  await page.waitForTimeout(200);
+
+  const lines = text.split('\n');
+  let insertOk = true;
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) {
+      await page.keyboard.press('Enter');
+    }
+    if (lines[i].length > 0) {
+      const ok = await el.evaluate((node, line) => {
+        node.focus();
+        return document.execCommand('insertText', false, line);
+      }, lines[i]);
+      if (!ok) {
+        insertOk = false;
+        break;
+      }
+    }
+  }
+
+  if (!insertOk) {
+    logger.warn('insertText: execCommand failed, falling back to keyboard.type');
+    await el.evaluate((node) => {
+      node.textContent = '';
+    }, null);
+    await page.keyboard.type(text, { delay: 5 });
+  }
 }
 
 export class XCamoufoxTool {
@@ -247,15 +274,11 @@ export class XCamoufoxTool {
         .locator('[data-testid="apple_sign_in_button"] + * + *')
         .click();
 
-      const nameSelectors = ['input[autocomplete="name"]'];
-
-      if (!(await waitAndFill(page, nameSelectors, input.username, 'name'))) {
+      if (!(await waitAndFill(page, ['input[autocomplete="name"]'], input.username, 'name'))) {
         return { success: false, error: 'Could not find name input' };
       }
 
-      const emailSelectors = ['input[autocomplete="email"]'];
-
-      if (!(await waitAndFill(page, emailSelectors, input.email, 'email'))) {
+      if (!(await waitAndFill(page, ['input[autocomplete="email"]'], input.email, 'email'))) {
         return { success: false, error: 'Could not find email input' };
       }
 
@@ -273,41 +296,25 @@ export class XCamoufoxTool {
         '[role="button"]:has-text("Next")'
       ];
       await waitAndClick(page, nextSelectors, 'next after dob').catch(() => {});
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(1000);
 
       const usernameSelectors = [
         'input[data-testid="ocfSignupTextInput"]',
         'input[name="username"]',
         'input[placeholder*="username" i]'
       ];
-      if (
-        !(await waitAndFill(
-          page,
-          usernameSelectors,
-          input.username,
-          'username'
-        ))
-      ) {
+      if (!(await waitAndFill(page, usernameSelectors, input.username, 'username'))) {
         return { success: false, error: 'Could not find username input' };
       }
-      await waitAndClick(page, nextSelectors, 'next after username').catch(
-        () => {}
-      );
-      await page.waitForTimeout(1500);
+      await waitAndClick(page, nextSelectors, 'next after username').catch(() => {});
+      await page.waitForTimeout(1000);
 
       const passwordSelectors = [
         'input[type="password"]',
         'input[name="password"]',
         'input[data-testid="ocfSignupTextInput"]'
       ];
-      if (
-        !(await waitAndFill(
-          page,
-          passwordSelectors,
-          input.password,
-          'password'
-        ))
-      ) {
+      if (!(await waitAndFill(page, passwordSelectors, input.password, 'password'))) {
         return { success: false, error: 'Could not find password input' };
       }
 
@@ -319,15 +326,22 @@ export class XCamoufoxTool {
       if (!(await waitAndClick(page, signupSelectors, 'sign up'))) {
         return { success: false, error: 'Could not find Sign up button' };
       }
-      await page.waitForTimeout(3000);
 
-      const verificationSelectors = [
-        'input[data-testid="ocfSignupTextInput"]',
-        'input[type="text"]',
-        'input[inputmode="numeric"]'
-      ];
+      // Wait for signup to process — check for verification input or redirect
+      await page.waitForFunction(
+        () => {
+          const verInput = document.querySelector(
+            'input[data-testid="ocfSignupTextInput"], input[inputmode="numeric"]'
+          );
+          if (verInput) return true;
+          const url = location.href;
+          return url.includes('home') || url.includes('explore');
+        },
+        { timeout: 10000 }
+      ).catch(() => {});
+
       const verificationInput = page
-        .locator(verificationSelectors.join(', '))
+        .locator('input[data-testid="ocfSignupTextInput"], input[type="text"], input[inputmode="numeric"]')
         .first();
       const isVerificationVisible = await verificationInput
         .isVisible()
@@ -345,10 +359,16 @@ export class XCamoufoxTool {
           };
         }
         await verificationInput.fill(code);
-        await waitAndClick(page, nextSelectors, 'submit verification').catch(
-          () => {}
-        );
-        await page.waitForTimeout(5000);
+        await waitAndClick(page, nextSelectors, 'submit verification').catch(() => {});
+
+        // Wait for post-verification navigation
+        await page.waitForFunction(
+          () => {
+            const url = location.href;
+            return url.includes('home') || url.includes('explore');
+          },
+          { timeout: 10000 }
+        ).catch(() => {});
       }
 
       const currentUrl = page.url();
@@ -406,7 +426,7 @@ export class XCamoufoxTool {
       const page = await browser.newPage();
       page.setDefaultTimeout(DEFAULT_TIMEOUT);
 
-      // Navigate to home first to establish full session (ct0 CSRF cookie, etc.)
+      // Navigate to home to establish full session (ct0 CSRF cookie, etc.)
       logger.info('postTweet: navigating to x.com/home to init session');
       await page.goto('https://x.com/home', {
         waitUntil: 'domcontentloaded',
@@ -425,106 +445,39 @@ export class XCamoufoxTool {
         return { success: false, error: 'auth_token is invalid or expired' };
       }
 
-      // Detect premium: check for verified badge on the account switcher in sidebar
-      let isPremium = false;
-      try {
-        isPremium = await page.evaluate(() => {
-          // Premium users have a verified badge icon near their profile in the sidebar
-          const switcher = document.querySelector(
-            '[data-testid="SideNav_AccountSwitcher_Button"]'
-          );
-          if (switcher) {
-            const badge = switcher.querySelector(
-              'svg[data-testid="icon-verified"]'
-            );
-            if (badge) return true;
-          }
-          // Also check for premium nav link text — non-premium see "Premium" subscribe CTA
-          // while premium users see "Premium" with checkmark or different styling
-          // Fallback: check if the "Get Verified" / premium signup link exists
-          const premiumSignup = document.querySelector(
-            'a[href="/i/premium_sign_up"]'
-          );
-          if (premiumSignup) return false;
-          // If no signup link found, check for verified badge anywhere in nav
-          const navBadge = document.querySelector(
-            'nav svg[data-testid="icon-verified"]'
-          );
-          return !!navBadge;
-        });
-        logger.info({ isPremium }, 'postTweet: premium status detected');
-      } catch {
-        logger.warn('postTweet: could not detect premium status');
-      }
+      // Detect premium status (non-blocking, quick check)
+      const isPremium = await page.evaluate(() => {
+        const switcher = document.querySelector(
+          '[data-testid="SideNav_AccountSwitcher_Button"]'
+        );
+        if (switcher?.querySelector('svg[data-testid="icon-verified"]')) return true;
+        if (document.querySelector('a[href="/i/premium_sign_up"]')) return false;
+        return !!document.querySelector('nav svg[data-testid="icon-verified"]');
+      }).catch(() => false);
+      logger.info({ isPremium }, 'postTweet: premium status detected');
 
-      // Now open compose
+      // Open compose
       logger.info('postTweet: navigating to compose');
       await page.goto('https://x.com/compose/post', {
         waitUntil: 'domcontentloaded',
         timeout: 15000
       });
-      await page.waitForTimeout(2000);
 
-      logger.info('postTweet: filling compose area');
-      const composeSelectors = [
-        '[data-testid="tweetTextarea_0"]',
-        '[contenteditable="true"][role="textbox"]',
-        'div[contenteditable="true"]'
-      ];
-      let composed = false;
-      for (const sel of composeSelectors) {
-        try {
-          const el = page.locator(sel).first();
-          await el.waitFor({ state: 'visible', timeout: 5000 });
-          await el.click();
-          await page.waitForTimeout(300);
-
-          // Insert text line-by-line: execCommand('insertText') doesn't handle \n
-          // in contenteditable, so we split by newlines and press Enter between parts.
-          const lines = input.text.split('\n');
-          let insertOk = true;
-          for (let i = 0; i < lines.length; i++) {
-            if (i > 0) {
-              await page.keyboard.press('Enter');
-            }
-            if (lines[i].length > 0) {
-              const ok = await el.evaluate((node, line) => {
-                node.focus();
-                return document.execCommand('insertText', false, line);
-              }, lines[i]);
-              if (!ok) {
-                insertOk = false;
-                break;
-              }
-            }
-          }
-
-          if (!insertOk) {
-            // Fallback: clear and use keyboard.type which handles \n natively
-            logger.warn(
-              'postTweet: execCommand failed, falling back to keyboard.type'
-            );
-            await el.evaluate((node) => {
-              node.textContent = '';
-            }, null);
-            await page.keyboard.type(input.text, { delay: 15 });
-          }
-
-          composed = true;
-          logger.info(
-            { selector: sel, method: insertOk ? 'execCommand' : 'keyboard' },
-            'postTweet: text entered'
-          );
-          break;
-        } catch {
-          continue;
-        }
-      }
-      if (!composed) {
+      // Wait for compose area to appear (event-driven, not hard timeout)
+      const composeSelector = '[data-testid="tweetTextarea_0"], [contenteditable="true"][role="textbox"], div[contenteditable="true"]';
+      const composeEl = page.locator(composeSelector).first();
+      try {
+        await composeEl.waitFor({ state: 'visible', timeout: 8000 });
+      } catch {
         logger.warn('postTweet: could not find compose area');
         return { success: false, error: 'Could not find compose area' };
       }
 
+      logger.info('postTweet: filling compose area');
+      await insertText(page, composeEl, input.text);
+      logger.info('postTweet: text entered');
+
+      // Upload media if provided
       if (input.mediaPaths && input.mediaPaths.length > 0) {
         const uploadResult = await uploadMediaFiles(page, input.mediaPaths);
         if (!uploadResult.success) {
@@ -540,47 +493,28 @@ export class XCamoufoxTool {
         }
       }
 
-      await page.waitForTimeout(1000);
+      // Brief settle before posting
+      await page.waitForTimeout(500);
 
-      const postButtonSelectors = [
-        '[data-testid="tweetButton"]',
-        'button[data-testid="tweetButton"]'
-      ];
-
+      const postButtonSelector = '[data-testid="tweetButton"], button[data-testid="tweetButton"]';
       const MAX_POST_ATTEMPTS = 3;
       let lastError: string | null = null;
 
       for (let attempt = 1; attempt <= MAX_POST_ATTEMPTS; attempt++) {
-        // Click the Post button
         logger.info({ attempt }, 'postTweet: clicking Post button');
-        let submitted = false;
-        for (const sel of postButtonSelectors) {
-          try {
-            const btn = page.locator(sel).first();
-            await btn.waitFor({ state: 'visible', timeout: 5000 });
-            await btn.click();
-            submitted = true;
-            logger.info(
-              { selector: sel, attempt },
-              'postTweet: Post button clicked'
-            );
-            break;
-          } catch {
-            continue;
-          }
-        }
-        if (!submitted) {
-          logger.warn(
-            'postTweet: Post button not found, falling back to Ctrl+Enter'
-          );
+        const btn = page.locator(postButtonSelector).first();
+        const btnVisible = await btn.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+
+        if (btnVisible) {
+          await btn.click();
+          logger.info({ attempt }, 'postTweet: Post button clicked');
+        } else {
+          logger.warn('postTweet: Post button not found, falling back to Ctrl+Enter');
           await page.keyboard.press('Control+Enter');
         }
 
         // Wait for success OR error signals
-        logger.info(
-          { attempt },
-          'postTweet: waiting for confirmation or error'
-        );
+        logger.info({ attempt }, 'postTweet: waiting for confirmation or error');
         const outcome = await page
           .waitForFunction(
             () => {
@@ -655,7 +589,6 @@ export class XCamoufoxTool {
           'postTweet: attempt result'
         );
 
-        // Success
         if (outcome.success || tweetIdMatch) {
           return {
             success: true,
@@ -666,14 +599,13 @@ export class XCamoufoxTool {
 
         lastError = outcome.error;
 
-        // Error from X — dismiss toast/error and retry
+        // Error from X — dismiss toast and retry
         if (outcome.error && attempt < MAX_POST_ATTEMPTS) {
           logger.warn(
             { error: outcome.error, attempt },
             'postTweet: X error, will retry'
           );
 
-          // Dismiss the toast by clicking it or waiting for it to disappear
           try {
             const toast = page.locator('[data-testid="toast"]').first();
             if (await toast.isVisible().catch(() => false)) {
@@ -687,12 +619,11 @@ export class XCamoufoxTool {
           await page
             .waitForFunction(
               () => !document.querySelector('[data-testid="toast"]'),
-              { timeout: 5000 }
+              { timeout: 3000 }
             )
             .catch(() => {});
 
-          // Small delay before retry
-          await page.waitForTimeout(2000);
+          await page.waitForTimeout(1000);
           continue;
         }
       }
@@ -706,7 +637,6 @@ export class XCamoufoxTool {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Try to capture diagnostics even on crash
       if (browser) {
         try {
           const pages = browser['context']?.pages?.() ?? [];

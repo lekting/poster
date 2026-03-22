@@ -95,24 +95,23 @@ async function captureThreadsDiagnostics(
   }
 }
 
+/** Race all selectors via CSS comma-join — fills the first one visible. */
 async function waitAndFill(
   page: Page,
   selectors: string[],
   value: string,
-  label: string
+  label: string,
+  timeout = 8000
 ): Promise<boolean> {
-  for (const sel of selectors) {
-    try {
-      const el = page.locator(sel).first();
-      await el.waitFor({ state: 'visible', timeout: 8000 });
-      await el.fill(value);
-      logger.debug({ label, selector: sel }, 'Filled field');
-      return true;
-    } catch {
-      continue;
-    }
+  try {
+    const el = page.locator(selectors.join(', ')).first();
+    await el.waitFor({ state: 'visible', timeout });
+    await el.fill(value);
+    logger.debug({ label }, 'Filled field');
+    return true;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 interface Selector {
@@ -120,12 +119,30 @@ interface Selector {
   hasText?: string;
 }
 
+/** Try selectors sequentially (needed for hasText filtering). */
 async function waitAndClick(
   page: Page,
   selectors: Selector[],
   label: string,
   timeout = 8000
 ): Promise<boolean> {
+  // Fast path: try all simple selectors (no hasText) via CSS join first
+  const simpleSelectors = selectors.filter((s) => !s.hasText);
+  if (simpleSelectors.length > 0) {
+    try {
+      const el = page
+        .locator(simpleSelectors.map((s) => s.selector).join(', '))
+        .first();
+      await el.waitFor({ state: 'visible', timeout: Math.min(timeout, 3000) });
+      await el.click();
+      logger.debug({ label }, 'Clicked (fast path)');
+      return true;
+    } catch {
+      // Fall through to sequential
+    }
+  }
+
+  // Slow path: try each selector with hasText
   for (const sel of selectors) {
     try {
       const el = page
@@ -134,8 +151,7 @@ async function waitAndClick(
           sel.hasText ? { hasText: sel.hasText } : undefined
         )
         .first();
-      logger.debug({ label, selector: sel }, 'Searching for element to click');
-      await el.waitFor({ timeout });
+      await el.waitFor({ timeout: Math.min(timeout, 3000) });
       await el.click();
       logger.debug({ label, selector: sel }, 'Clicked');
       return true;
@@ -153,7 +169,7 @@ async function typeIntoContentEditable(
   text: string
 ): Promise<boolean> {
   await locator.click();
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(200);
 
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
@@ -166,12 +182,137 @@ async function typeIntoContentEditable(
         return document.execCommand('insertText', false, line);
       }, lines[i]);
       if (!ok) {
-        // Fallback to keyboard.type
-        await page.keyboard.type(lines[i], { delay: 10 });
+        await page.keyboard.type(lines[i], { delay: 5 });
       }
     }
   }
   return true;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Shared auth logic                                                 */
+/* ------------------------------------------------------------------ */
+
+/** Check if page shows logged-in state. */
+async function checkLoggedIn(page: Page): Promise<boolean> {
+  const url = page.url();
+  if (url.includes('/login') || url.includes('/accounts/login')) {
+    return false;
+  }
+
+  try {
+    return await page.evaluate(() => {
+      if (
+        document.querySelector('[aria-label="Create"]') ||
+        document.querySelector('a[href="/create"]') ||
+        document.querySelector('svg[aria-label="Create"]')
+      ) return true;
+
+      if (
+        document.querySelector('img[data-testid="user-avatar"]') ||
+        document.querySelector('[aria-label="Profile"]')
+      ) return true;
+
+      const homeLink = document.querySelector('a[href="/"]');
+      const activityLink = document.querySelector('[aria-label="Activity"]');
+      if (homeLink && activityLink) return true;
+
+      return false;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Poll for either 2FA or logged-in state using waitForFunction instead of a sleep loop.
+ * Returns 'logged_in' | '2fa' | 'timeout'.
+ */
+async function waitForLoginOutcome(page: Page, timeoutMs = 15000): Promise<'logged_in' | '2fa' | 'timeout'> {
+  try {
+    const result = await page.waitForFunction(
+      () => {
+        // Check 2FA
+        const otpInput = document.querySelector('input[autocomplete="one-time-code"]');
+        if (otpInput) return '2fa';
+
+        const body = document.body.textContent?.toLowerCase() ?? '';
+        if (
+          body.includes('two-factor') ||
+          body.includes('verification code') ||
+          body.includes('security code') ||
+          body.includes('authentication code') ||
+          body.includes('enter the 6-digit code') ||
+          body.includes('check your authentication app')
+        ) return '2fa';
+
+        // Check logged in
+        const url = location.href;
+        if (url.includes('/login') || url.includes('/accounts/login')) return false;
+
+        if (
+          document.querySelector('[aria-label="Create"]') ||
+          document.querySelector('a[href="/create"]') ||
+          document.querySelector('svg[aria-label="Create"]') ||
+          document.querySelector('img[data-testid="user-avatar"]') ||
+          document.querySelector('[aria-label="Profile"]')
+        ) return 'logged_in';
+
+        const homeLink = document.querySelector('a[href="/"]');
+        const activityLink = document.querySelector('[aria-label="Activity"]');
+        if (homeLink && activityLink) return 'logged_in';
+
+        return false;
+      },
+      { timeout: timeoutMs }
+    );
+    const val = await result.jsonValue();
+    return (val as 'logged_in' | '2fa') || 'timeout';
+  } catch {
+    return 'timeout';
+  }
+}
+
+/** Handle 2FA flow: generate TOTP, fill input, confirm, wait for redirect. */
+async function handle2fa(
+  page: Page,
+  totpSecret: string
+): Promise<{ success: boolean; error?: string }> {
+  logger.info('threads auth: 2FA required, generating TOTP code');
+  const totpRemaining = 30 - (Math.floor(Date.now() / 1000) % 30);
+  const code = generateTOTP(totpSecret);
+  logger.info(
+    { codeLength: code.length, totpWindowRemaining: totpRemaining },
+    'threads auth: TOTP code generated'
+  );
+
+  const codeSelectors = [
+    'input[autocomplete="one-time-code"]',
+    'input[inputmode="numeric"]'
+  ];
+  if (!(await waitAndFill(page, codeSelectors, code, '2fa code'))) {
+    return { success: false, error: 'Could not find 2FA code input' };
+  }
+
+  const confirmSelectors: Selector[] = [
+    { selector: 'div[role="button"]', hasText: 'Submit' },
+    { selector: 'button', hasText: 'Submit' }
+  ];
+  await waitAndClick(page, confirmSelectors, '2fa confirm');
+
+  logger.info('threads auth: waiting for post-2FA redirect');
+  try {
+    await page.waitForURL((url) => !url.toString().includes('/login'), {
+      timeout: 15000
+    });
+  } catch {
+    logger.warn('threads auth: no redirect after 2FA submit');
+  }
+  await page
+    .waitForLoadState('networkidle', { timeout: 8000 })
+    .catch(() => {});
+
+  return { success: true };
 }
 
 /* ------------------------------------------------------------------ */
@@ -190,163 +331,15 @@ export class ThreadsCamoufoxTool {
       const page = await browser.newPage();
       page.setDefaultTimeout(DEFAULT_TIMEOUT);
 
-      // Try cookies first
-      if (input.cookies && input.cookies.length > 0) {
-        logger.info('threads login: trying saved cookies');
-        await browser.addCookies(input.cookies);
-        await page.goto(THREADS_BASE, {
-          waitUntil: 'domcontentloaded',
-          timeout: 20000
-        });
-        await page
-          .waitForLoadState('networkidle', { timeout: 10000 })
-          .catch(() => {});
-
-        const isLoggedIn = await this.checkLoggedIn(page);
-        if (isLoggedIn) {
-          logger.info('threads login: cookies still valid');
-          const freshCookies = await browser.getCookies(THREADS_BASE);
-          return { success: true, cookies: freshCookies };
-        }
-        logger.info(
-          'threads login: cookies expired, proceeding with credentials'
-        );
-      }
-
-      // Navigate to login page
-      await page.goto(LOGIN_URL, {
-        waitUntil: 'domcontentloaded',
-        timeout: 20000
+      const authResult = await this.authenticateInBrowser(browser, page, {
+        username: input.username,
+        password: input.password,
+        totpSecret: input.totpSecret,
+        cookies: input.cookies
       });
-      await page
-        .waitForLoadState('networkidle', { timeout: 10000 })
-        .catch(() => {});
-      await page.waitForTimeout(2000);
 
-      // Fill username
-      const usernameSelectors = [
-        'input[autocomplete="username"]',
-        'input[type="text"]'
-      ];
-      if (
-        !(await waitAndFill(
-          page,
-          usernameSelectors,
-          input.username,
-          'username'
-        ))
-      ) {
-        return {
-          success: false,
-          error: 'Could not find username input on Threads login'
-        };
-      }
-
-      // Fill password
-      const passwordSelectors = [
-        'input[autocomplete="current-password"]',
-        'input[type="password"]'
-      ];
-      if (
-        !(await waitAndFill(
-          page,
-          passwordSelectors,
-          input.password,
-          'password'
-        ))
-      ) {
-        return {
-          success: false,
-          error: 'Could not find password input on Threads login'
-        };
-      }
-
-      // Click login button
-      const loginButtonSelectors: Selector[] = [
-        { selector: 'button[type="submit"]' },
-        { selector: 'div[role="button"]', hasText: 'Log in' },
-        { selector: 'button', hasText: 'Log in' },
-        { selector: 'span', hasText: 'Log in' }
-      ];
-      if (!(await waitAndClick(page, loginButtonSelectors, 'login button'))) {
-        return { success: false, error: 'Could not find login button' };
-      }
-
-      // Poll for either 2FA prompt or successful login (up to 15 seconds)
-      let needs2fa = false;
-      let alreadyLoggedIn = false;
-      for (let i = 0; i < 15; i++) {
-        await page.waitForTimeout(1000);
-        needs2fa = await this.check2faPrompt(page);
-        if (needs2fa) break;
-        alreadyLoggedIn = await this.checkLoggedIn(page);
-        if (alreadyLoggedIn) break;
-        logger.debug(
-          { attempt: i + 1 },
-          'threads login: waiting for 2FA or redirect'
-        );
-      }
-
-      if (needs2fa) {
-        logger.info('threads login: 2FA required, generating TOTP code');
-        const totpRemaining = 30 - (Math.floor(Date.now() / 1000) % 30);
-        const code = generateTOTP(input.totpSecret);
-        logger.info(
-          { codeLength: code.length, totpWindowRemaining: totpRemaining },
-          'threads login: TOTP code generated'
-        );
-
-        const codeSelectors = [
-          'input[autocomplete="one-time-code"]',
-          'input[inputmode="numeric"]'
-        ];
-        if (!(await waitAndFill(page, codeSelectors, code, '2fa code'))) {
-          return { success: false, error: 'Could not find 2FA code input' };
-        }
-
-        const confirm2faSelectors: Selector[] = [
-          { selector: 'div[role="button"]', hasText: 'Submit' },
-          { selector: 'button', hasText: 'Submit' }
-        ];
-        await waitAndClick(page, confirm2faSelectors, '2fa confirm');
-
-        // Wait for Threads to process 2FA and redirect away from login
-        logger.info('threads login: waiting for post-2FA redirect');
-        try {
-          await page.waitForURL((url) => !url.toString().includes('/login'), {
-            timeout: 15000
-          });
-        } catch {
-          logger.warn('threads login: no redirect after 2FA submit');
-        }
-        await page
-          .waitForLoadState('networkidle', { timeout: 10000 })
-          .catch(() => {});
-        await page.waitForTimeout(2000);
-      }
-
-      // Navigate to English page before checking login state
-      await page.goto(THREADS_BASE, {
-        waitUntil: 'domcontentloaded',
-        timeout: 15000
-      });
-      await page
-        .waitForLoadState('networkidle', { timeout: 10000 })
-        .catch(() => {});
-
-      // Verify we're logged in
-      const loggedIn = await this.checkLoggedIn(page);
-      if (!loggedIn) {
-        const diagnostic = await captureThreadsDiagnostics(
-          page,
-          'threads-login-failed'
-        );
-        return {
-          success: false,
-          error:
-            diagnostic ||
-            'Login did not complete. Check credentials or 2FA key.'
-        };
+      if (!authResult.success) {
+        return { success: false, error: authResult.error };
       }
 
       const cookies = await browser.getCookies(THREADS_BASE);
@@ -363,14 +356,12 @@ export class ThreadsCamoufoxTool {
 
   /**
    * Post a multi-part thread. First part = main post, subsequent parts = "Add to thread".
-   * Links should go in comment parts (thread replies), NOT in the first post.
    */
   async postThread(input: ThreadsPostInput): Promise<ThreadsPostResult> {
     if (input.parts.length === 0) {
       return { success: false, error: 'No parts to post' };
     }
 
-    // Validate each part is within 500 chars
     for (let i = 0; i < input.parts.length; i++) {
       if (input.parts[i].length > 500) {
         return {
@@ -392,18 +383,17 @@ export class ThreadsCamoufoxTool {
         return { success: false, error: authResult.error };
       }
 
-      // Navigate to home / create new post
+      // Navigate to home
       logger.info('threads post: navigating to home');
       await page.goto(THREADS_BASE, {
         waitUntil: 'domcontentloaded',
         timeout: 20000
       });
       await page
-        .waitForLoadState('networkidle', { timeout: 10000 })
+        .waitForLoadState('networkidle', { timeout: 8000 })
         .catch(() => {});
-      await page.waitForTimeout(2000);
 
-      // Click "New thread" / compose button
+      // Click compose button
       const composeSelectors: Selector[] = [
         { selector: '[aria-label="Create"]' },
         { selector: '[aria-label="New thread"]' },
@@ -419,18 +409,21 @@ export class ThreadsCamoufoxTool {
         5000
       );
       if (!composeOpened) {
-        // Try navigating directly
         logger.info('threads post: trying direct navigation to compose');
         await page.goto(`${THREADS_BASE}/create`, {
           waitUntil: 'domcontentloaded',
           timeout: 15000
         });
-        await page.waitForTimeout(2000);
         composeOpened = true;
       }
 
-      // Wait for composer to appear
-      await page.waitForTimeout(1500);
+      // Wait for compose area to appear (event-driven)
+      const composeAreaSelector = 'div[contenteditable="true"][role="textbox"], div[contenteditable="true"], p[contenteditable="true"]';
+      try {
+        await page.locator(composeAreaSelector).first().waitFor({ state: 'visible', timeout: 8000 });
+      } catch {
+        await captureThreadsDiagnostics(page, 'threads-compose-wait');
+      }
 
       // Fill first part
       logger.info('threads post: filling first part');
@@ -440,7 +433,7 @@ export class ThreadsCamoufoxTool {
         return { success: false, error: 'Could not find compose text area' };
       }
 
-      // Upload media for first part if provided
+      // Upload media for first part
       if (input.mediaParts?.[0] && input.mediaParts[0].length > 0) {
         await this.uploadMediaForPart(page, input.mediaParts[0]);
       }
@@ -448,9 +441,7 @@ export class ThreadsCamoufoxTool {
       // Add additional parts via "Add to thread"
       for (let i = 1; i < input.parts.length; i++) {
         logger.info({ partIndex: i }, 'threads post: adding thread part');
-        await page.waitForTimeout(1000);
 
-        // Click "Add to thread" button
         const addToThreadSelectors: Selector[] = [
           { selector: 'div[role="button"]', hasText: 'Add to thread' },
           { selector: 'button', hasText: 'Add to thread' },
@@ -470,9 +461,9 @@ export class ThreadsCamoufoxTool {
           break;
         }
 
-        await page.waitForTimeout(1000);
+        // Wait for new compose area to appear
+        await page.waitForTimeout(500);
 
-        // Fill the new compose area (it should be the last one)
         const partOk = await this.fillComposeArea(page, input.parts[i], i);
         if (!partOk) {
           logger.warn(
@@ -482,15 +473,14 @@ export class ThreadsCamoufoxTool {
           break;
         }
 
-        // Upload media for this part if provided
         if (input.mediaParts?.[i] && input.mediaParts[i]!.length > 0) {
           await this.uploadMediaForPart(page, input.mediaParts[i]!);
         }
       }
 
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(500);
 
-      // Click "Post" / publish button
+      // Publish
       logger.info('threads post: publishing');
       const postButtonSelectors: Selector[] = [
         { selector: 'div[role="dialog"] div[role="button"]', hasText: 'Post' },
@@ -510,35 +500,30 @@ export class ThreadsCamoufoxTool {
           break;
         }
 
-        // Wait for navigation or confirmation
-        await page.waitForTimeout(5000);
+        // Wait for navigation away from compose (event-driven)
+        const postOutcome = await page.waitForFunction(
+          () => {
+            const url = location.href;
+            if (!url.includes('/create') || url.includes('/post/') || url.includes('/t/')) {
+              return 'navigated';
+            }
+            const editors = document.querySelectorAll('[contenteditable="true"]');
+            if (editors.length === 0) return 'compose_gone';
+            return false;
+          },
+          { timeout: 10000 }
+        ).then((h) => h.jsonValue() as Promise<string>).catch(() => 'timeout');
 
-        const currentUrl = page.url();
-        // After posting, Threads typically redirects away from /create
-        if (
-          !currentUrl.includes('/create') ||
-          currentUrl.includes('/post/') ||
-          currentUrl.includes('/t/')
-        ) {
-          posted = true;
-          break;
-        }
-
-        // Check if compose area disappeared
-        const composeGone = await page.evaluate(() => {
-          const editors = document.querySelectorAll('[contenteditable="true"]');
-          return editors.length === 0;
-        });
-        if (composeGone) {
+        if (postOutcome === 'navigated' || postOutcome === 'compose_gone') {
           posted = true;
           break;
         }
 
         logger.warn(
-          { attempt, url: currentUrl },
+          { attempt, url: page.url() },
           'threads post: post may not have submitted, retrying'
         );
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(1000);
       }
 
       const finalUrl = page.url();
@@ -573,7 +558,6 @@ export class ThreadsCamoufoxTool {
 
   /**
    * Reply to an existing post with a comment.
-   * Used for adding links to own posts (since links can't go in main Threads post).
    */
   async replyToPost(input: ThreadsReplyInput): Promise<ThreadsReplyResult> {
     if (input.text.length > 500) {
@@ -605,19 +589,25 @@ export class ThreadsCamoufoxTool {
         timeout: 20000
       });
       await page
-        .waitForLoadState('networkidle', { timeout: 10000 })
+        .waitForLoadState('networkidle', { timeout: 8000 })
         .catch(() => {});
-      await page.waitForTimeout(2000);
 
-      // Click the reply area / "Reply" button
-      const replyTriggerSelectors = [
+      // Click the reply trigger
+      const replyTriggerSelectors: Selector[] = [
         { selector: '[aria-label="Reply"]' },
         { selector: 'div[role="button"]', hasText: 'Reply' },
         { selector: 'svg', hasText: 'Reply' },
         { selector: '[data-pressable-container="true"]', hasText: 'Reply' }
       ];
       await waitAndClick(page, replyTriggerSelectors, 'reply trigger', 5000);
-      await page.waitForTimeout(1500);
+
+      // Wait for reply compose area
+      const replyAreaSelector = 'div[contenteditable="true"][role="textbox"], div[contenteditable="true"], p[contenteditable="true"]';
+      try {
+        await page.locator(replyAreaSelector).last().waitFor({ state: 'visible', timeout: 5000 });
+      } catch {
+        // continue anyway
+      }
 
       // Find the reply text area and type
       const replyAreaSelectors = [
@@ -628,9 +618,8 @@ export class ThreadsCamoufoxTool {
       let replied = false;
       for (const sel of replyAreaSelectors) {
         try {
-          // Get the LAST contenteditable (the reply one, not the original post)
           const el = page.locator(sel).last();
-          await el.waitFor({ state: 'visible', timeout: 5000 });
+          await el.waitFor({ state: 'visible', timeout: 3000 });
           await typeIntoContentEditable(page, el, input.text);
           replied = true;
           break;
@@ -644,7 +633,7 @@ export class ThreadsCamoufoxTool {
         return { success: false, error: 'Could not find reply text area' };
       }
 
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(500);
 
       // Click Post reply button
       const postReplySelectors: Selector[] = [
@@ -661,7 +650,14 @@ export class ThreadsCamoufoxTool {
         return { success: false, error: 'Could not find reply Post button' };
       }
 
-      await page.waitForTimeout(5000);
+      // Wait for reply to be submitted (compose area gone or page changed)
+      await page.waitForFunction(
+        () => {
+          const editors = document.querySelectorAll('[contenteditable="true"]');
+          return editors.length === 0;
+        },
+        { timeout: 8000 }
+      ).catch(() => {});
 
       const cookies = await browser.getCookies(THREADS_BASE);
       logger.info('threads reply: posted successfully');
@@ -698,10 +694,10 @@ export class ThreadsCamoufoxTool {
         timeout: 20000
       });
       await page
-        .waitForLoadState('networkidle', { timeout: 10000 })
+        .waitForLoadState('networkidle', { timeout: 8000 })
         .catch(() => {});
 
-      if (await this.checkLoggedIn(page)) {
+      if (await checkLoggedIn(page)) {
         logger.info('threads auth: cookies valid');
         return { success: true };
       }
@@ -714,9 +710,8 @@ export class ThreadsCamoufoxTool {
       timeout: 20000
     });
     await page
-      .waitForLoadState('networkidle', { timeout: 10000 })
+      .waitForLoadState('networkidle', { timeout: 8000 })
       .catch(() => {});
-    await page.waitForTimeout(2000);
 
     // Username
     const usernameSelectors = [
@@ -740,7 +735,7 @@ export class ThreadsCamoufoxTool {
       return { success: false, error: 'Could not find password input' };
     }
 
-    // Login
+    // Login button
     const loginBtnSelectors: Selector[] = [
       { selector: 'button[type="submit"]' },
       { selector: 'div[role="button"]', hasText: 'Log in' },
@@ -750,67 +745,24 @@ export class ThreadsCamoufoxTool {
       return { success: false, error: 'Could not find login button' };
     }
 
-    // Poll for either 2FA prompt or successful login (up to 15 seconds)
-    let needs2fa = false;
-    let alreadyLoggedIn = false;
-    for (let i = 0; i < 15; i++) {
-      await page.waitForTimeout(1000);
-      needs2fa = await this.check2faPrompt(page);
-      if (needs2fa) break;
-      alreadyLoggedIn = await this.checkLoggedIn(page);
-      if (alreadyLoggedIn) break;
-      logger.debug(
-        { attempt: i + 1 },
-        'threads auth: waiting for 2FA or redirect'
-      );
+    // Event-driven wait for 2FA or login success (replaces 15-iteration polling loop)
+    const loginOutcome = await waitForLoginOutcome(page, 15000);
+
+    if (loginOutcome === '2fa') {
+      const twoFaResult = await handle2fa(page, creds.totpSecret);
+      if (!twoFaResult.success) return twoFaResult;
     }
 
-    if (needs2fa) {
-      logger.info('threads auth: 2FA required');
-      const totpRemaining = 30 - (Math.floor(Date.now() / 1000) % 30);
-      const code = generateTOTP(creds.totpSecret);
-      logger.info(
-        { codeLength: code.length, totpWindowRemaining: totpRemaining },
-        'threads auth: TOTP code generated'
-      );
-      const codeSelectors = [
-        'input[autocomplete="one-time-code"]',
-        'input[inputmode="numeric"]'
-      ];
-      if (!(await waitAndFill(page, codeSelectors, code, '2fa code'))) {
-        return { success: false, error: 'Could not find 2FA input' };
-      }
-      const confirmSelectors: Selector[] = [
-        { selector: 'div[role="button"]', hasText: 'Submit' },
-        { selector: 'button', hasText: 'Submit' }
-      ];
-      await waitAndClick(page, confirmSelectors, '2fa confirm');
-
-      // Wait for Threads to process 2FA and redirect away from login
-      logger.info('threads auth: waiting for post-2FA redirect');
-      try {
-        await page.waitForURL((url) => !url.toString().includes('/login'), {
-          timeout: 15000
-        });
-      } catch {
-        logger.warn('threads auth: no redirect after 2FA submit');
-      }
-      await page
-        .waitForLoadState('networkidle', { timeout: 10000 })
-        .catch(() => {});
-      await page.waitForTimeout(2000);
-    }
-
-    // Navigate to English page before checking login state
+    // Navigate to English page to verify login state
     await page.goto(THREADS_BASE, {
       waitUntil: 'domcontentloaded',
       timeout: 15000
     });
     await page
-      .waitForLoadState('networkidle', { timeout: 10000 })
+      .waitForLoadState('networkidle', { timeout: 8000 })
       .catch(() => {});
 
-    if (!(await this.checkLoggedIn(page))) {
+    if (!(await checkLoggedIn(page))) {
       const diagnostic = await captureThreadsDiagnostics(
         page,
         'threads-auth-failed'
@@ -819,70 +771,6 @@ export class ThreadsCamoufoxTool {
     }
 
     return { success: true };
-  }
-
-  private async checkLoggedIn(page: Page): Promise<boolean> {
-    const url = page.url();
-    // If we're on the login page, we're not logged in
-    if (url.includes('/login') || url.includes('/accounts/login')) {
-      return false;
-    }
-
-    // Check for elements that only appear when logged in
-    try {
-      const loggedIn = await page.evaluate(() => {
-        // Check for create/compose button (only visible when logged in)
-        const createBtn =
-          document.querySelector('[aria-label="Create"]') ||
-          document.querySelector('a[href="/create"]') ||
-          document.querySelector('svg[aria-label="Create"]');
-        if (createBtn) return true;
-
-        // Check for profile/avatar elements
-        const avatar =
-          document.querySelector('img[data-testid="user-avatar"]') ||
-          document.querySelector('[aria-label="Profile"]');
-        if (avatar) return true;
-
-        // Check for nav bar with home/search/activity
-        const homeLink = document.querySelector('a[href="/"]');
-        const activityLink = document.querySelector('[aria-label="Activity"]');
-        if (homeLink && activityLink) return true;
-
-        return false;
-      });
-      return loggedIn;
-    } catch {
-      return false;
-    }
-  }
-
-  private async check2faPrompt(page: Page): Promise<boolean> {
-    try {
-      // First check for 2FA input elements directly via locator (more reliable)
-      const inputSelectors = ['input[autocomplete="one-time-code"]'];
-      for (const sel of inputSelectors) {
-        const count = await page.locator(sel).count();
-        if (count > 0) return true;
-      }
-
-      // Fallback: check page text for 2FA-related keywords
-      const has2fa = await page.evaluate(() => {
-        const body = document.body.textContent?.toLowerCase() ?? '';
-        return (
-          body.includes('two-factor') ||
-          body.includes('verification code') ||
-          body.includes('security code') ||
-          body.includes('authentication code') ||
-          body.includes('confirm your identity') ||
-          body.includes('enter the 6-digit code') ||
-          body.includes('check your authentication app')
-        );
-      });
-      return has2fa;
-    } catch {
-      return false;
-    }
   }
 
   private async fillComposeArea(
@@ -898,12 +786,10 @@ export class ThreadsCamoufoxTool {
 
     for (const sel of composeSelectors) {
       try {
-        // For partIndex > 0, we want the last matching element (the newly added compose area)
         const elements = page.locator(sel);
         const count = await elements.count();
         if (count === 0) continue;
 
-        // Use the last one for additional parts, first for the main post
         const targetIndex = partIndex > 0 ? count - 1 : 0;
         const el = elements.nth(targetIndex);
         await el.waitFor({ state: 'visible', timeout: 5000 });
@@ -941,8 +827,8 @@ export class ThreadsCamoufoxTool {
           { selector: sel, count: mediaPaths.length },
           'threads post: media uploaded'
         );
-        // Wait for upload to process
-        await page.waitForTimeout(3000);
+        // Wait for upload to settle — watch for file input to be consumed
+        await page.waitForTimeout(2000);
         return;
       } catch {
         continue;

@@ -224,7 +224,7 @@ export class PostDistributionWorker {
       });
     } finally {
       for (const mediaPath of mediaPaths) {
-        deleteTempFile(mediaPath);
+        await deleteTempFile(mediaPath);
       }
     }
   }
@@ -357,7 +357,7 @@ export class PostDistributionWorker {
       });
     } finally {
       for (const mediaPath of mediaPaths) {
-        deleteTempFile(mediaPath);
+        await deleteTempFile(mediaPath);
       }
     }
   }

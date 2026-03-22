@@ -50,10 +50,6 @@ export class WebResearchTool {
     }
   }
 
-  private async setupContext(context: BrowserContext) {
-    // Add any context setup here
-  }
-
   private attachBrowserListeners() {
     if (!this.browser) return;
     this.browser.on('disconnected', () => {
@@ -61,10 +57,6 @@ export class WebResearchTool {
       this.browser = null;
       this.browserContext = null;
     });
-  }
-
-  private attachContextListeners() {
-    // Add any context listeners here
   }
 
   private async ensureBrowser(
@@ -128,9 +120,7 @@ export class WebResearchTool {
       });
       this.browserProxyUrl = proxyUrl;
       this.browserUserAgent = userAgent;
-      await this.setupContext(this.browserContext);
       this.attachBrowserListeners();
-      this.attachContextListeners();
     })();
 
     try {
@@ -177,15 +167,7 @@ export class WebResearchTool {
           content = `Selector '${extractSelector}' not found on page.`;
         }
       } else {
-        // Extract main text content, stripping scripts and styles
         content = stripHtml(await page.content());
-      }
-
-      let html = '';
-      try {
-        html = await page.content();
-      } catch {
-        html = '';
       }
 
       const status =
@@ -240,8 +222,6 @@ export class WebResearchTool {
       return cached.value;
     }
 
-    logger.debug('here');
-
     const url = `https://duckduckgo.com/?q=${encodeURIComponent(q)}&ia=news`;
     const userAgent =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0';
@@ -251,10 +231,7 @@ export class WebResearchTool {
 
     const page = await this.browserContext.newPage();
     try {
-      logger.debug('here2');
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      // Best-effort scraping: DDG often renders results client-side; use DOM once loaded.
-      logger.debug('here3');
       const items = await page.evaluate(() => {
         const out: any[] = [];
         const cards = document.querySelectorAll(
@@ -270,8 +247,6 @@ export class WebResearchTool {
         }
         return out;
       });
-      logger.debug(JSON.stringify(items));
-
       const unique: Array<{ title: string; url: string }> = [];
       const seen = new Set<string>();
       for (const it of Array.isArray(items) ? items : []) {

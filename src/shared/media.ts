@@ -1,7 +1,9 @@
-import fs from 'fs';
+import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { logger } from './logger.js';
+
+const MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024; // 50 MB
 
 /** Parse mediaUrls from material. Supports JSON array or newline/comma-separated. */
 export function parseMediaUrls(mediaUrls: string | null | undefined): string[] {
@@ -24,7 +26,8 @@ export function parseMediaUrls(mediaUrls: string | null | undefined): string[] {
 /** Download URL to temp file. Returns path or null on failure. */
 export async function downloadToTemp(url: string): Promise<string | null> {
   const tmpDir = os.tmpdir();
-  const ext = path.extname(new URL(url).pathname) || '.bin';
+  const parsedUrl = new URL(url);
+  const ext = path.extname(parsedUrl.pathname) || '.bin';
   const tmpPath = path.join(tmpDir, `qwebek-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
   try {
     const res = await fetch(url, { redirect: 'follow' });
@@ -32,20 +35,34 @@ export async function downloadToTemp(url: string): Promise<string | null> {
       logger.warn({ url, status: res.status }, 'Media download failed');
       return null;
     }
+
+    const contentLength = Number(res.headers.get('content-length') || '0');
+    if (contentLength > MAX_DOWNLOAD_SIZE) {
+      logger.warn({ url, contentLength, maxSize: MAX_DOWNLOAD_SIZE }, 'Media file too large, skipping');
+      return null;
+    }
+
     const buf = await res.arrayBuffer();
-    fs.writeFileSync(tmpPath, Buffer.from(buf));
+    if (buf.byteLength > MAX_DOWNLOAD_SIZE) {
+      logger.warn({ url, size: buf.byteLength, maxSize: MAX_DOWNLOAD_SIZE }, 'Media file too large');
+      return null;
+    }
+
+    await fs.writeFile(tmpPath, Buffer.from(buf));
     return tmpPath;
   } catch (err) {
     logger.warn({ err, url }, 'Media download error');
+    // Clean up partial file if it was created
+    await fs.unlink(tmpPath).catch(() => {});
     return null;
   }
 }
 
 /** Delete temp file. Ignores errors. */
-export function deleteTempFile(filePath: string): void {
+export async function deleteTempFile(filePath: string): Promise<void> {
   try {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    await fs.unlink(filePath);
   } catch {
-    // ignore
+    // ignore — file may already be gone
   }
 }
