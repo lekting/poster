@@ -34,19 +34,28 @@ export class TelegramBotApp {
       await next();
     });
 
-    // Auth middleware — attach services + resolve user
+    // Admin guard + auth middleware
     this.bot.use(async (ctx, next) => {
       ctx.services = this.services;
       ctx.authUserId = null;
-      if (ctx.from) {
-        const user = await this.services.userService.ensureUser({
-          telegramId: String(ctx.from.id),
-          username: ctx.from.username ?? null,
-          firstName: ctx.from.first_name ?? null,
-          lastName: ctx.from.last_name ?? null,
-        });
-        ctx.authUserId = user.id;
+      if (!ctx.from) return;
+
+      const telegramId = String(ctx.from.id);
+      const adminIds = config.ADMIN_TELEGRAM_IDS;
+
+      // If admin list is configured, only allow listed users
+      if (adminIds.length > 0 && !adminIds.includes(telegramId)) {
+        logger.debug({ telegramId }, 'Blocked non-admin user');
+        return;
       }
+
+      const user = await this.services.userService.ensureUser({
+        telegramId,
+        username: ctx.from.username ?? null,
+        firstName: ctx.from.first_name ?? null,
+        lastName: ctx.from.last_name ?? null,
+      });
+      ctx.authUserId = user.id;
       await next();
     });
 

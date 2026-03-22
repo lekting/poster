@@ -54,8 +54,17 @@ const schema = z.object({
   /** How often to check for accounts due for organic post (ms). Default: 1 hour. */
   ORGANIC_POST_CHECK_INTERVAL_MS: z.number().int().min(60000).default(3600000),
   /** Min time between organic posts per account (ms). Default: 24 hours. */
-  ORGANIC_POST_MIN_AGE_MS: z.number().int().min(3600000).default(86400000)
+  ORGANIC_POST_MIN_AGE_MS: z.number().int().min(3600000).default(86400000),
+
+  /** Comma-separated Telegram user IDs allowed to use the bot */
+  ADMIN_TELEGRAM_IDS: z.array(z.string().min(1)).default([])
 });
+
+function readList(name: string): string[] | undefined {
+  const value = read(name);
+  if (!value) return undefined;
+  return value.split(',').map((s) => s.trim()).filter(Boolean);
+}
 
 const parsed = schema.safeParse({
   NODE_ENV: read('NODE_ENV'),
@@ -75,7 +84,8 @@ const parsed = schema.safeParse({
   POST_WORKER_INTERVAL_MS: readNumber('POST_WORKER_INTERVAL_MS'),
   REG_WORKER_INTERVAL_MS: readNumber('REG_WORKER_INTERVAL_MS'),
   ORGANIC_POST_CHECK_INTERVAL_MS: readNumber('ORGANIC_POST_CHECK_INTERVAL_MS'),
-  ORGANIC_POST_MIN_AGE_MS: readNumber('ORGANIC_POST_MIN_AGE_MS')
+  ORGANIC_POST_MIN_AGE_MS: readNumber('ORGANIC_POST_MIN_AGE_MS'),
+  ADMIN_TELEGRAM_IDS: readList('ADMIN_TELEGRAM_IDS')
 });
 
 if (!parsed.success) {
